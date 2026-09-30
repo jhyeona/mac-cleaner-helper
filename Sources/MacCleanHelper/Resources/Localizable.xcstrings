@@ -1,0 +1,56 @@
+{
+  "sourceLanguage" : "ko",
+  "strings" : {
+    "Biu" : {
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Biu"
+          }
+        }
+      }
+    },
+    "Mac 개발 환경 정리 도우미" : {
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Mac Development Cleanup Assistant"
+          }
+        }
+      }
+    },
+    "재생성 가능" : {
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Regeneratable"
+          }
+        }
+      }
+    },
+    "확인 필요" : {
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Review Required"
+          }
+        }
+      }
+    },
+    "보호 대상" : {
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Protected"
+          }
+        }
+      }
+    }
+  },
+  "version" : "1.0"
+}
