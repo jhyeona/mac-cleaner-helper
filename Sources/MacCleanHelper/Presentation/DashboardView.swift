@@ -1,9 +1,19 @@
 import AppKit
 import SwiftUI
 
+private enum DashboardSection: String, CaseIterable {
+    case candidates
+    case explorer
+
+    var title: String { self == .candidates ? "정리 후보" : "용량 탐색" }
+    var symbol: String { self == .candidates ? "sparkles" : "externaldrive.badge.magnifyingglass" }
+}
+
 struct DashboardView: View {
-    @StateObject private var model = DashboardModel()
+    @StateObject private var model: DashboardModel
+    @StateObject private var explorer: FolderExplorerModel
     @State private var selection: CleanupItem.ID?
+    @State private var section: DashboardSection = .candidates
     @State private var showSettings = false
     @AppStorage("Biu.quietMode") private var quietMode = false
     @AppStorage("Biu.floatingEnabled") private var floatingEnabled = false
@@ -13,31 +23,53 @@ struct DashboardView: View {
         model.items.first { $0.id == selection }
     }
 
+    private var contentColumn: AnyView {
+        if section == .candidates {
+            return AnyView(
+                VStack(spacing: 0) {
+                    FilterBar(model: model)
+                    ResultListView(model: model, selection: $selection)
+                }
+                .safeAreaInset(edge: .bottom, spacing: 0) { ScanStatusView(model: model) }
+            )
+        }
+        return AnyView(FolderExplorerContentView(explorer: explorer, dashboard: model))
+    }
+
+    private var detailColumn: AnyView {
+        if section == .explorer {
+            return AnyView(FolderExplorerDetailView(explorer: explorer, dashboard: model))
+        }
+        if let selectedItem {
+            return AnyView(CleanupDetailView(item: selectedItem, model: model) { url in
+                section = .explorer
+                explorer.requestOpen(url, enterPackage: true)
+            })
+        }
+        return AnyView(BiuEmptyState(
+            title: "항목을 선택하세요",
+            systemImage: "sparkles",
+            description: "비우가 탐지 근거와 정리 영향을 설명해 드립니다."
+        ))
+    }
+
+    init() {
+        let dashboard = DashboardModel()
+        _model = StateObject(wrappedValue: dashboard)
+        _explorer = StateObject(wrappedValue: FolderExplorerModel(folderStore: dashboard.folderStore))
+    }
+
     var body: some View {
         NavigationSplitView {
-            SidebarView(model: model, showSettings: $showSettings)
+            SidebarView(model: model, section: $section, showSettings: $showSettings)
         } content: {
-            VStack(spacing: 0) {
-                FilterBar(model: model)
-                ResultListView(model: model, selection: $selection)
-            }
-            .safeAreaInset(edge: .bottom, spacing: 0) { ScanStatusView(model: model) }
+            contentColumn
         } detail: {
-            if let selectedItem {
-                CleanupDetailView(item: selectedItem, model: model)
-            } else {
-                BiuEmptyState(
-                    title: "항목을 선택하세요",
-                    systemImage: "sparkles",
-                    description: "비우가 탐지 근거와 정리 영향을 설명해 드립니다."
-                )
-            }
+            detailColumn
         }
         .tint(.mint)
         .onChange(of: model.items) { _, items in
-            if selection == nil || !items.contains(where: { $0.id == selection }) {
-                selection = items.first?.id
-            }
+            updateSelection(for: items)
         }
         .onChange(of: model.filteredItems.map(\.id)) { _, visibleIDs in
             if let selection, !visibleIDs.contains(selection) {
@@ -50,6 +82,9 @@ struct DashboardView: View {
             if floatingEnabled, !quietMode, importantStates.contains(state) {
                 BiuFloatingPanelController.shared.show(message: model.assistantMessage, state: state)
             }
+        }
+        .onChange(of: model.cleanupInvalidationID) { _, _ in
+            explorer.handleSuccessfulCleanup(paths: model.lastSuccessfulCleanupPaths)
         }
         .onReceive(NotificationCenter.default.publisher(for: .biuShowSettings)) { _ in
             showSettings = true
@@ -81,13 +116,21 @@ struct DashboardView: View {
             CleanupResultView(result: result, model: model)
         }
         .sheet(isPresented: $showSettings) {
-            SettingsView(model: model)
+            SettingsView(model: model, explorer: explorer)
         }
         .sheet(isPresented: Binding(
             get: { !didCompleteOnboarding },
             set: { if !$0 { didCompleteOnboarding = true } }
         )) {
             OnboardingView(model: model, isComplete: $didCompleteOnboarding)
+        }
+    }
+
+    private func updateSelection(for items: [CleanupItem]) {
+        guard let current = selection,
+              items.contains(where: { $0.id == current }) else {
+            selection = items.first?.id
+            return
         }
     }
 }
@@ -111,6 +154,21 @@ private struct SidebarWideButtonStyle: ButtonStyle {
     }
 }
 
+private struct SidebarFooterButtonStyle: ButtonStyle {
+    @Environment(\.isEnabled) private var isEnabled
+
+    func makeBody(configuration: Configuration) -> some View {
+        configuration.label
+            .frame(maxWidth: .infinity, minHeight: 38, alignment: .leading)
+            .contentShape(Rectangle())
+            .background(
+                configuration.isPressed ? Color.primary.opacity(0.08) : Color.clear,
+                in: RoundedRectangle(cornerRadius: 7)
+            )
+            .opacity(isEnabled ? 1 : 0.45)
+    }
+}
+
 private struct SidebarActionLabel: View {
     let title: String
     let systemImage: String
@@ -129,15 +187,32 @@ private struct SidebarActionLabel: View {
 
 private struct SidebarView: View {
     @ObservedObject var model: DashboardModel
+    @ObservedObject private var folderStore: FolderBookmarkStore
+    @Binding var section: DashboardSection
     @Binding var showSettings: Bool
     @AppStorage("Biu.quietMode") private var quietMode = false
     @AppStorage("Biu.floatingEnabled") private var floatingEnabled = false
+
+    init(model: DashboardModel, section: Binding<DashboardSection>, showSettings: Binding<Bool>) {
+        self.model = model
+        folderStore = model.folderStore
+        _section = section
+        _showSettings = showSettings
+    }
 
     var body: some View {
         VStack(spacing: 0) {
             ScrollView {
                 VStack(alignment: .leading, spacing: 14) {
                     BiuAssistantHeader(state: model.biuState, message: model.assistantMessage)
+
+                    Picker("화면", selection: $section) {
+                        ForEach(DashboardSection.allCases, id: \.self) { section in
+                            Label(section.title, systemImage: section.symbol).tag(section)
+                        }
+                    }
+                    .pickerStyle(.segmented)
+                    .accessibilityIdentifier("sidebar.section-picker")
 
                     HStack(spacing: 8) {
                         MetricView(title: "재생성 가능", value: model.reclaimableSize, color: .mint)
@@ -148,7 +223,7 @@ private struct SidebarView: View {
                         HStack {
                             Text("등록한 개발 폴더").font(.biu(.caption, weight: .semibold))
                             Spacer()
-                            Text("\(model.folderStore.folders.count)")
+                            Text("\(model.folderStore.selectedFolders.count)/\(model.folderStore.folders.count) 선택")
                                 .font(.biu(.caption).monospacedDigit())
                                 .foregroundStyle(.secondary)
                         }
@@ -158,19 +233,36 @@ private struct SidebarView: View {
                                 .foregroundStyle(.secondary)
                         } else {
                             ForEach(model.folderStore.folders.prefix(5)) { folder in
-                                HStack(spacing: 6) {
-                                    Label(folder.url.lastPathComponent, systemImage: folder.isStale ? "folder.badge.questionmark" : "folder")
-                                        .font(.biu(.caption))
-                                        .lineLimit(1)
-                                        .help(folder.url.path)
-                                    Spacer(minLength: 4)
-                                    if isBroadScope(folder.url) {
-                                        Text("범위 큼")
-                                            .font(.biu(.caption2, weight: .semibold))
-                                            .foregroundStyle(.orange)
+                                Button {
+                                    model.folderStore.setSelected(
+                                        !model.folderStore.isSelected(folder),
+                                        for: folder
+                                    )
+                                } label: {
+                                    HStack(spacing: 7) {
+                                        Image(systemName: model.folderStore.isSelected(folder) ? "checkmark.square.fill" : "square")
+                                            .foregroundStyle(model.folderStore.isSelected(folder) ? Color.mint : Color.secondary)
+                                        Label(folder.url.lastPathComponent, systemImage: folder.isStale ? "folder.badge.questionmark" : "folder")
+                                            .font(.biu(.caption))
+                                            .lineLimit(1)
+                                        Spacer(minLength: 4)
+                                        if isBroadScope(folder.url) {
+                                            Text("범위 큼")
+                                                .font(.biu(.caption2, weight: .semibold))
+                                                .foregroundStyle(.orange)
+                                        }
                                     }
+                                    .padding(.vertical, 3)
+                                    .frame(maxWidth: .infinity, minHeight: 34, alignment: .leading)
+                                    .contentShape(Rectangle())
                                 }
+                                .buttonStyle(.plain)
+                                .disabled(folder.isStale || model.isBusy)
+                                .help("다음 등록 폴더 분석에 \(model.folderStore.isSelected(folder) ? "포함됨" : "포함하지 않음")\n\(folder.url.path)")
                             }
+                            Text("체크한 폴더만 다음 분석에 포함됩니다.")
+                                .font(.biu(.caption2))
+                                .foregroundStyle(.secondary)
                         }
                     }
                     .padding(12)
@@ -231,7 +323,10 @@ private struct SidebarView: View {
                     }
                 }
                 .padding(.horizontal, 16)
-                .padding(.top, 4)
+                // NavigationSplitView gives sidebar scroll content an additional
+                // toolbar-height inset. Pull the first card back to the visible
+                // top edge instead of leaving a blank strip above the mascot.
+                .padding(.top, -38)
                 .padding(.bottom, 12)
             }
             .contentMargins(.top, 0, for: .scrollContent)
@@ -246,11 +341,11 @@ private struct SidebarView: View {
                         Text("전체 디스크 분석…")
                         Spacer()
                     }
-                    .frame(maxWidth: .infinity)
-                    .padding(.vertical, 7)
+                    .padding(.horizontal, 8)
+                    .frame(maxWidth: .infinity, minHeight: 38, alignment: .leading)
                     .contentShape(Rectangle())
                 }
-                .buttonStyle(.plain)
+                .buttonStyle(SidebarFooterButtonStyle())
                 .font(.biu(.callout, weight: .medium))
                 .disabled(model.isBusy)
 
@@ -262,12 +357,12 @@ private struct SidebarView: View {
                             Text("설정")
                             Spacer()
                         }
-                        .frame(maxWidth: .infinity)
-                        .padding(.vertical, 7)
+                        .padding(.horizontal, 8)
+                        .frame(maxWidth: .infinity, minHeight: 38, alignment: .leading)
                         .contentShape(Rectangle())
                     }
                     .font(.biu(.callout, weight: .medium))
-                    .buttonStyle(.plain)
+                    .buttonStyle(SidebarFooterButtonStyle())
 
                     if floatingEnabled {
                         Button {
@@ -275,8 +370,7 @@ private struct SidebarView: View {
                             BiuFloatingPanelController.shared.show(message: model.assistantMessage, state: model.biuState)
                         } label: {
                             Image(systemName: "sparkles.rectangle.stack")
-                                .frame(width: 28, height: 28)
-                                .contentShape(Rectangle())
+                                .biuIconHitTarget(38)
                         }
                         .buttonStyle(.plain)
                         .help("플로팅 비우 다시 부르기")
@@ -325,9 +419,10 @@ private struct BiuAssistantHeader: View {
     let message: String
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 9) {
-            HStack(spacing: 10) {
-                BiuMascotView(size: 90, showsWand: state != .protecting && state != .error)
+        VStack(alignment: .leading, spacing: 8) {
+            HStack(spacing: 5) {
+                BiuMascotView(size: 76, showsWand: state != .protecting && state != .error)
+                    .frame(width: 84, height: 58, alignment: .topLeading)
                 VStack(alignment: .leading, spacing: 2) {
                     Text("비우 Biu").font(.biu(.title2, weight: .bold))
                     Text(stateLabel).font(.biu(.caption)).foregroundStyle(.secondary)
@@ -394,6 +489,7 @@ private struct FilterBar: View {
                         } label: {
                             Image(systemName: "xmark.circle.fill")
                                 .foregroundStyle(.secondary)
+                                .biuIconHitTarget()
                         }
                         .buttonStyle(.plain)
                         .help("검색어 지우기")
@@ -430,51 +526,35 @@ private struct FilterBar: View {
     }
 
     private var sortMenu: some View {
-        Menu {
+        HStack(spacing: 6) {
             Picker("정렬 기준", selection: Binding(
                 get: { model.sortKey },
                 set: { model.selectSortKey($0) }
             )) {
                 ForEach(CleanupSortKey.allCases) { key in
-                    Text(key.title).tag(key)
+                    Text(key.compactTitle).tag(key)
                 }
             }
-            Divider()
+            .labelsHidden()
+            .pickerStyle(.menu)
+            .font(.biu(.callout, weight: .semibold))
+            .controlSize(.large)
+            .frame(width: 106, height: 36)
+            .accessibilityLabel("정렬 기준")
+
             Button {
                 model.toggleSortDirection()
             } label: {
-                Label(
-                    model.sortAscending ? "내림차순으로 바꾸기" : "오름차순으로 바꾸기",
-                    systemImage: model.sortAscending ? "arrow.down" : "arrow.up"
-                )
+                Image(systemName: model.sortAscending ? "arrow.up" : "arrow.down")
+                    .font(.system(size: 12, weight: .bold))
+                    .biuIconHitTarget()
             }
-        } label: {
-            Color.clear
-                .frame(width: 112, height: 32)
-                .contentShape(Rectangle())
+            .buttonStyle(.bordered)
+            .controlSize(.large)
+            .help(model.sortAscending ? "오름차순 — 눌러서 내림차순으로 변경" : "내림차순 — 눌러서 오름차순으로 변경")
+            .accessibilityLabel(model.sortAscending ? "오름차순" : "내림차순")
         }
-        .controlSize(.large)
-        .menuStyle(.borderlessButton)
-        .frame(width: 126, height: 32)
-        .background(.quaternary.opacity(0.55), in: RoundedRectangle(cornerRadius: 8))
-        .overlay {
-            HStack(spacing: 6) {
-                Image(systemName: "arrow.up.arrow.down")
-                    .font(.system(size: 11, weight: .semibold))
-                    .foregroundStyle(.secondary)
-                Text(model.sortKey.compactTitle)
-                    .font(.biu(.headline, weight: .semibold))
-                    .foregroundStyle(.primary)
-                Spacer(minLength: 0)
-                Image(systemName: model.sortAscending ? "chevron.up" : "chevron.down")
-                    .font(.system(size: 9, weight: .bold))
-                    .foregroundStyle(.secondary)
-            }
-            .padding(.horizontal, 9)
-            .allowsHitTesting(false)
-            .accessibilityHidden(true)
-        }
-        .accessibilityLabel("정렬: \(model.sortKey.title), \(model.sortAscending ? "오름차순" : "내림차순")")
+        .frame(width: 148, height: 36)
     }
 }
 
@@ -562,24 +642,43 @@ private struct ResultRow: View {
         item.assessment.risk == .avoid ? Color.secondary : Color.mint
     }
 
+    private var displayPath: String {
+        let home = FileManager.default.homeDirectoryForCurrentUser.standardizedFileURL.path
+        if item.path == home { return "~" }
+        if item.path.hasPrefix(home + "/") {
+            return "~" + String(item.path.dropFirst(home.count))
+        }
+        return item.path
+    }
+
     var body: some View {
         HStack(spacing: 11) {
             Button(action: toggle) {
-                Image(systemName: selectionSymbol).foregroundStyle(selectionColor)
+                Image(systemName: selectionSymbol)
+                    .foregroundStyle(selectionColor)
+                    .biuIconHitTarget(34)
             }
             .buttonStyle(.plain)
             .disabled(item.assessment.risk == .avoid || isDisabled)
             .accessibilityLabel(isInBasket ? "정리 바구니에서 빼기" : "정리 바구니에 담기")
 
-            Image(systemName: item.category.symbol)
+            Image(systemName: item.candidate.kind.symbol)
                 .frame(width: 28, height: 28)
                 .background(.quaternary, in: RoundedRectangle(cornerRadius: 7))
-            VStack(alignment: .leading, spacing: 2) {
+            VStack(alignment: .leading, spacing: 3) {
                 Text(item.name)
                     .font(.biu(.body, weight: .semibold))
                     .lineLimit(1)
-                Text("\(item.candidate.tool) · \(item.category.title)")
-                    .font(.biu(.caption)).foregroundStyle(.secondary)
+                Text(displayPath)
+                    .font(.biu(.caption2))
+                    .foregroundStyle(.secondary)
+                    .lineLimit(1)
+                    .truncationMode(.middle)
+                    .help(item.path)
+                Text("\(item.candidate.kind.title) · \(item.candidate.tool) · \(item.category.title)")
+                    .font(.biu(.caption))
+                    .foregroundStyle(.secondary)
+                    .lineLimit(1)
             }
             Spacer()
             VStack(alignment: .trailing, spacing: 3) {
@@ -587,7 +686,7 @@ private struct ResultRow: View {
                 RiskBadge(risk: item.assessment.risk)
             }
         }
-        .padding(.vertical, 6)
+        .padding(.vertical, 7)
     }
 }
 
@@ -651,6 +750,7 @@ private struct ScanStatusView: View {
 private struct CleanupDetailView: View {
     let item: CleanupItem
     @ObservedObject var model: DashboardModel
+    let openInExplorer: (URL) -> Void
 
     var body: some View {
         VStack(spacing: 0) {
@@ -658,7 +758,12 @@ private struct CleanupDetailView: View {
                 VStack(alignment: .leading, spacing: 20) {
                     HStack(alignment: .top) {
                         VStack(alignment: .leading, spacing: 7) {
-                            Text(item.name).font(.biu(.title, weight: .bold))
+                            HStack(spacing: 8) {
+                                Text(item.name).font(.biu(.title, weight: .bold))
+                                Label(item.candidate.kind.title, systemImage: item.candidate.kind.symbol)
+                                    .font(.biu(.caption, weight: .semibold))
+                                    .foregroundStyle(.secondary)
+                            }
                             Text(item.path)
                                 .font(.biu(.caption))
                                 .foregroundStyle(.secondary)
@@ -675,6 +780,14 @@ private struct CleanupDetailView: View {
                         SizeCard(title: "실제 할당", value: item.candidate.formattedSize)
                         SizeCard(title: "논리적 크기", value: item.candidate.formattedLogicalSize)
                         SizeCard(title: "수정일", value: item.candidate.modifiedAt?.formatted(date: .abbreviated, time: .omitted) ?? "알 수 없음")
+                    }
+
+                    if item.candidate.kind.canBrowseContents {
+                        DirectoryContentsPreview(
+                            rootPath: item.path,
+                            openInExplorer: openInExplorer
+                        )
+                            .id(item.path)
                     }
 
                     ExplanationCard(title: "무엇인가요?", symbol: "wrench.and.screwdriver.fill", text: "\(item.candidate.tool) · \(item.candidate.detectionReason)")
@@ -704,7 +817,7 @@ private struct CleanupDetailView: View {
     }
 }
 
-private struct BiuEmptyState: View {
+struct BiuEmptyState: View {
     let title: String
     let systemImage: String
     let description: String
@@ -730,7 +843,7 @@ private struct BiuEmptyState: View {
     }
 }
 
-private struct SizeCard: View {
+struct SizeCard: View {
     let title: String
     let value: String
     var body: some View {
@@ -747,7 +860,326 @@ private struct SizeCard: View {
     }
 }
 
-private struct ExplanationCard: View {
+private struct DirectoryContentsPreview: View {
+    let rootPath: String
+    let openInExplorer: (URL) -> Void
+    @State private var names: [(String, CandidateKind)] = []
+    @State private var isLoading = true
+    @State private var errorMessage: String?
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            HStack {
+                Label("폴더 내용 미리보기", systemImage: "list.bullet.indent")
+                    .font(.biu(.headline, weight: .semibold))
+                Spacer()
+                Button("용량 탐색에서 열기") {
+                    openInExplorer(URL(fileURLWithPath: rootPath, isDirectory: true))
+                }
+                .buttonStyle(.bordered)
+            }
+            if isLoading {
+                HStack(spacing: 8) {
+                    ProgressView().controlSize(.small)
+                    Text("바로 아래 항목을 읽는 중…")
+                }
+                .font(.biu(.caption))
+                .foregroundStyle(.secondary)
+            } else if let errorMessage {
+                Text(errorMessage)
+                    .font(.biu(.caption))
+                    .foregroundStyle(.orange)
+            } else if names.isEmpty {
+                Text("빈 폴더입니다.")
+                    .font(.biu(.caption))
+                    .foregroundStyle(.secondary)
+            } else {
+                ForEach(Array(names.enumerated()), id: \.offset) { _, entry in
+                    Label(entry.0, systemImage: entry.1.symbol)
+                        .font(.biu(.caption))
+                        .lineLimit(1)
+                }
+                Text("크기 계산과 하위 탐색은 용량 탐색 화면에서 진행합니다.")
+                    .font(.biu(.caption2))
+                    .foregroundStyle(.secondary)
+            }
+        }
+        .padding(13)
+        .background(.quaternary.opacity(0.42), in: RoundedRectangle(cornerRadius: 11))
+        .task(id: rootPath) { await loadPreview() }
+    }
+
+    private func loadPreview() async {
+        isLoading = true
+        let root = URL(fileURLWithPath: rootPath, isDirectory: true)
+        let result = await Task.detached(priority: .utility) { () -> Result<[(String, CandidateKind)], Error> in
+            do {
+                let keys: Set<URLResourceKey> = [.isDirectoryKey, .isSymbolicLinkKey, .isPackageKey]
+                let urls = try FileManager.default.contentsOfDirectory(
+                    at: root,
+                    includingPropertiesForKeys: Array(keys),
+                    options: []
+                )
+                let preview = try urls.prefix(6).map { url in
+                    let values = try url.resourceValues(forKeys: keys)
+                    let kind: CandidateKind
+                    if values.isSymbolicLink == true { kind = .symbolicLink }
+                    else if values.isPackage == true { kind = .package }
+                    else if values.isDirectory == true { kind = .directory }
+                    else { kind = .regularFile }
+                    return (url.lastPathComponent, kind)
+                }
+                return .success(preview)
+            } catch {
+                return .failure(error)
+            }
+        }.value
+        switch result {
+        case .success(let preview): names = preview; errorMessage = nil
+        case .failure(let error): names = []; errorMessage = "미리보기를 읽을 수 없어요: \(error.localizedDescription)"
+        }
+        isLoading = false
+    }
+}
+
+private struct DirectoryPreviewEntry: Identifiable, Sendable {
+    let url: URL
+    let kind: CandidateKind
+    let allocatedSize: Int64?
+
+    var id: String { url.path }
+}
+
+private struct DirectoryContentsBrowser: View {
+    let rootPath: String
+
+    @State private var currentURL: URL
+    @State private var entries: [DirectoryPreviewEntry] = []
+    @State private var totalCount = 0
+    @State private var isExpanded = false
+    @State private var isLoading = false
+    @State private var errorMessage: String?
+
+    init(rootPath: String) {
+        self.rootPath = rootPath
+        _currentURL = State(initialValue: URL(fileURLWithPath: rootPath, isDirectory: true))
+    }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 0) {
+            Button {
+                isExpanded.toggle()
+            } label: {
+                HStack(spacing: 9) {
+                    Image(systemName: "list.bullet.indent")
+                        .foregroundStyle(.mint)
+                        .frame(width: 24)
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text("폴더 내용")
+                            .font(.biu(.headline, weight: .semibold))
+                        Text("정리 후보는 상위 항목이며, 여기서 내부 폴더와 파일을 단계별로 확인할 수 있어요.")
+                            .font(.biu(.caption))
+                            .foregroundStyle(.secondary)
+                    }
+                    Spacer()
+                    Image(systemName: isExpanded ? "chevron.up" : "chevron.down")
+                        .font(.system(size: 10, weight: .bold))
+                        .foregroundStyle(.secondary)
+                }
+                .padding(12)
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .contentShape(Rectangle())
+            }
+            .buttonStyle(.plain)
+
+            if isExpanded {
+                Divider()
+                HStack(spacing: 8) {
+                    Button {
+                        openParent()
+                    } label: {
+                        Label("상위", systemImage: "chevron.left")
+                    }
+                    .buttonStyle(.plain)
+                    .disabled(currentURL.standardizedFileURL.path == rootURL.standardizedFileURL.path)
+
+                    Text(relativeCurrentPath)
+                        .font(.biu(.caption, weight: .semibold))
+                        .lineLimit(1)
+                        .truncationMode(.middle)
+                        .help(currentURL.path)
+                    Spacer()
+                    if totalCount > entries.count {
+                        Text("상위 \(entries.count)개 / 전체 \(totalCount)개")
+                            .font(.biu(.caption2))
+                            .foregroundStyle(.secondary)
+                    } else if !isLoading, errorMessage == nil {
+                        Text("\(totalCount)개")
+                            .font(.biu(.caption2).monospacedDigit())
+                            .foregroundStyle(.secondary)
+                    }
+                }
+                .padding(.horizontal, 12)
+                .padding(.vertical, 9)
+
+                Group {
+                    if isLoading {
+                        HStack(spacing: 8) {
+                            ProgressView().controlSize(.small)
+                            Text("폴더 내용을 읽고 있어요.")
+                        }
+                        .font(.biu(.caption))
+                        .foregroundStyle(.secondary)
+                        .frame(maxWidth: .infinity, minHeight: 84)
+                    } else if let errorMessage {
+                        Label(errorMessage, systemImage: "exclamationmark.triangle")
+                            .font(.biu(.caption))
+                            .foregroundStyle(.orange)
+                            .frame(maxWidth: .infinity, minHeight: 84)
+                    } else if entries.isEmpty {
+                        Text("빈 폴더입니다.")
+                            .font(.biu(.caption))
+                            .foregroundStyle(.secondary)
+                            .frame(maxWidth: .infinity, minHeight: 84)
+                    } else {
+                        ScrollView {
+                            LazyVStack(spacing: 0) {
+                                ForEach(entries) { entry in
+                                    directoryEntryRow(entry)
+                                    if entry.id != entries.last?.id { Divider() }
+                                }
+                            }
+                        }
+                        .frame(maxHeight: 230)
+                    }
+                }
+                .padding(.horizontal, 12)
+                .padding(.bottom, 12)
+            }
+        }
+        .background(.quaternary.opacity(0.42), in: RoundedRectangle(cornerRadius: 11))
+        .task(id: isExpanded ? currentURL.path : "") {
+            guard isExpanded else { return }
+            await loadContents()
+        }
+    }
+
+    private var rootURL: URL {
+        URL(fileURLWithPath: rootPath, isDirectory: true)
+    }
+
+    private var relativeCurrentPath: String {
+        let root = rootURL.standardizedFileURL.path
+        let current = currentURL.standardizedFileURL.path
+        guard current != root else { return rootURL.lastPathComponent }
+        return rootURL.lastPathComponent + String(current.dropFirst(root.count))
+    }
+
+    @ViewBuilder
+    private func directoryEntryRow(_ entry: DirectoryPreviewEntry) -> some View {
+        let row = HStack(spacing: 9) {
+            Image(systemName: entry.kind.symbol)
+                .foregroundStyle(entry.kind.canBrowseContents ? Color.mint : Color.secondary)
+                .frame(width: 20)
+            VStack(alignment: .leading, spacing: 2) {
+                Text(entry.url.lastPathComponent)
+                    .font(.biu(.callout, weight: .medium))
+                    .lineLimit(1)
+                Text(entry.kind.title)
+                    .font(.biu(.caption2))
+                    .foregroundStyle(.secondary)
+            }
+            Spacer()
+            if let allocatedSize = entry.allocatedSize, entry.kind == .regularFile {
+                Text(ByteCountFormatter.string(fromByteCount: allocatedSize, countStyle: .file))
+                    .font(.biu(.caption).monospacedDigit())
+                    .foregroundStyle(.secondary)
+            }
+            if entry.kind.canBrowseContents {
+                Image(systemName: "chevron.right")
+                    .font(.system(size: 9, weight: .semibold))
+                    .foregroundStyle(.tertiary)
+            }
+        }
+        .padding(.horizontal, 4)
+        .padding(.vertical, 7)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .contentShape(Rectangle())
+
+        if entry.kind.canBrowseContents {
+            Button { currentURL = entry.url } label: { row }
+                .buttonStyle(.plain)
+        } else {
+            row
+        }
+    }
+
+    private func openParent() {
+        let parent = currentURL.deletingLastPathComponent().standardizedFileURL
+        let root = rootURL.standardizedFileURL.path
+        guard parent.path == root || parent.path.hasPrefix(root + "/") else { return }
+        currentURL = parent
+    }
+
+    @MainActor
+    private func loadContents() async {
+        isLoading = true
+        errorMessage = nil
+        let url = currentURL
+        let result = await Task.detached(priority: .userInitiated) {
+            do {
+                let keys: Set<URLResourceKey> = [
+                    .isDirectoryKey, .isRegularFileKey, .isSymbolicLinkKey,
+                    .isPackageKey, .fileAllocatedSizeKey, .totalFileAllocatedSizeKey
+                ]
+                let urls = try FileManager.default.contentsOfDirectory(
+                    at: url,
+                    includingPropertiesForKeys: Array(keys),
+                    options: []
+                )
+                let previews = try urls.map { child -> DirectoryPreviewEntry in
+                    let values = try child.resourceValues(forKeys: keys)
+                    let kind: CandidateKind
+                    if values.isSymbolicLink == true {
+                        kind = .symbolicLink
+                    } else if values.isPackage == true {
+                        kind = .package
+                    } else if values.isDirectory == true {
+                        kind = .directory
+                    } else if values.isRegularFile == true {
+                        kind = .regularFile
+                    } else {
+                        kind = .inaccessible
+                    }
+                    let allocated = values.totalFileAllocatedSize ?? values.fileAllocatedSize
+                    return DirectoryPreviewEntry(url: child, kind: kind, allocatedSize: allocated.map(Int64.init))
+                }
+                .sorted { lhs, rhs in
+                    if lhs.kind.canBrowseContents != rhs.kind.canBrowseContents {
+                        return lhs.kind.canBrowseContents
+                    }
+                    return lhs.url.lastPathComponent.localizedStandardCompare(rhs.url.lastPathComponent) == .orderedAscending
+                }
+                return (entries: Array(previews.prefix(200)), total: previews.count, error: Optional<String>.none)
+            } catch {
+                return (entries: [DirectoryPreviewEntry](), total: 0, error: Optional(error.localizedDescription))
+            }
+        }.value
+
+        guard currentURL == url else { return }
+        if let error = result.error {
+            entries = []
+            totalCount = 0
+            errorMessage = "폴더 내용을 읽을 수 없어요: \(error)"
+        } else {
+            entries = result.entries
+            totalCount = result.total
+        }
+        isLoading = false
+    }
+}
+
+struct ExplanationCard: View {
     let title: String
     let symbol: String
     let text: String
@@ -906,6 +1338,7 @@ private struct CleanupResultView: View {
 
 private struct SettingsView: View {
     @ObservedObject var model: DashboardModel
+    @ObservedObject var explorer: FolderExplorerModel
     @ObservedObject private var folderStore: FolderBookmarkStore
     @Environment(\.dismiss) private var dismiss
     @AppStorage("Biu.quietMode") private var quietMode = false
@@ -914,111 +1347,205 @@ private struct SettingsView: View {
     @State private var showImmediateDeletionWarning = false
     @State private var folderPendingRemoval: RegisteredFolder?
 
-    init(model: DashboardModel) {
+    init(model: DashboardModel, explorer: FolderExplorerModel) {
         self.model = model
+        self.explorer = explorer
         folderStore = model.folderStore
     }
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 18) {
+        VStack(spacing: 0) {
             HStack {
                 Text("비우 설정").font(.biu(.title2, weight: .bold))
                 Spacer()
                 Button("완료") { dismiss() }
                     .font(.biu(.callout, weight: .semibold))
+                    .buttonStyle(.borderedProminent)
+                    .controlSize(.large)
+                    .keyboardShortcut(.defaultAction)
             }
-            GroupBox {
-                VStack(spacing: 8) {
-                    HStack {
-                        Spacer()
-                        Button {
-                            model.chooseAndRegisterFolders(startScan: false)
-                        } label: {
-                            Label("폴더 추가", systemImage: "plus")
-                        }
-                        .font(.biu(.callout, weight: .medium))
-                        .disabled(model.isBusy)
-                    }
-                    ForEach(folderStore.folders) { folder in
-                        HStack {
-                            Image(systemName: "folder")
-                            Text(folder.url.path)
-                                .font(.biu(.callout))
-                                .lineLimit(1)
-                            Spacer()
-                            Button(role: .destructive) { folderPendingRemoval = folder } label: {
-                                Image(systemName: "minus.circle")
+            .padding(.horizontal, 24)
+            .padding(.vertical, 16)
+
+            Divider()
+
+            ScrollView {
+                VStack(alignment: .leading, spacing: 16) {
+                    GroupBox {
+                        VStack(alignment: .leading, spacing: 12) {
+                            HStack(alignment: .center, spacing: 14) {
+                                VStack(alignment: .leading, spacing: 4) {
+                                    Text("분석할 개발 폴더를 등록하고 체크한 폴더만 살펴봅니다.")
+                                        .font(.biu(.callout, weight: .medium))
+                                    Text("체크 변경은 다음 ‘등록 폴더 분석’부터 적용됩니다.")
+                                        .font(.biu(.caption))
+                                        .foregroundStyle(.secondary)
+                                }
+                                Spacer()
+                                Button {
+                                    model.chooseAndRegisterFolders(startScan: false)
+                                } label: {
+                                    Label("폴더 추가", systemImage: "plus")
+                                        .frame(minHeight: 24)
+                                }
+                                .font(.biu(.callout, weight: .medium))
+                                .buttonStyle(.bordered)
+                                .controlSize(.large)
+                                .disabled(model.isBusy)
                             }
-                            .buttonStyle(.plain)
-                            .help("등록 해제")
-                            .accessibilityLabel("\(folder.url.lastPathComponent) 등록 해제")
+                            if !folderStore.folders.isEmpty { Divider() }
+                            ForEach(folderStore.folders) { folder in
+                                HStack(spacing: 10) {
+                                    Toggle(isOn: Binding(
+                                        get: { folderStore.isSelected(folder) },
+                                        set: { folderStore.setSelected($0, for: folder) }
+                                    )) {
+                                        HStack(spacing: 8) {
+                                            Image(systemName: folder.isStale ? "folder.badge.questionmark" : "folder")
+                                            VStack(alignment: .leading, spacing: 2) {
+                                                Text(folder.url.lastPathComponent)
+                                                    .font(.biu(.callout, weight: .medium))
+                                                Text(folder.url.path)
+                                                    .font(.biu(.caption2))
+                                                    .foregroundStyle(.secondary)
+                                                    .lineLimit(1)
+                                                    .truncationMode(.middle)
+                                            }
+                                        }
+                                    }
+                                    .toggleStyle(.checkbox)
+                                    .controlSize(.large)
+                                    .disabled(folder.isStale || model.isBusy)
+                                    Spacer()
+                                    Button(role: .destructive) { folderPendingRemoval = folder } label: {
+                                        Image(systemName: "minus.circle")
+                                            .biuIconHitTarget(34)
+                                    }
+                                    .buttonStyle(.plain)
+                                    .help("등록 해제")
+                                    .accessibilityLabel("\(folder.url.lastPathComponent) 등록 해제")
+                                }
+                            }
+                            if folderStore.folders.isEmpty {
+                                Text("등록된 폴더가 없습니다.")
+                                    .font(.biu(.callout))
+                                    .foregroundStyle(.secondary)
+                            }
                         }
+                        .padding(8)
+                    } label: {
+                        Text("등록 폴더").font(.biu(.headline, weight: .semibold))
                     }
-                    if folderStore.folders.isEmpty {
-                        Text("등록된 폴더가 없습니다.")
-                            .font(.biu(.callout))
-                            .foregroundStyle(.secondary)
+
+                    GroupBox {
+                        VStack(alignment: .leading, spacing: 7) {
+                            Toggle("검증된 재생성 캐시 즉시 삭제 허용", isOn: Binding(
+                                get: { model.allowsImmediateCacheDeletion },
+                                set: { enabled in
+                                    if enabled {
+                                        showImmediateDeletionWarning = true
+                                    } else {
+                                        model.allowsImmediateCacheDeletion = false
+                                    }
+                                }
+                            ))
+                            .font(.biu(.body))
+                            .controlSize(.large)
+                            Text("끄면 모든 파일 항목을 휴지통으로 이동합니다. 공식 CLI 작업은 별도로 표시됩니다.")
+                                .font(.biu(.caption))
+                                .foregroundStyle(.secondary)
+                        }
+                        .padding(8)
+                    } label: {
+                        Text("정리 방식").font(.biu(.headline, weight: .semibold))
                     }
-                }.padding(6)
-            } label: {
-                Text("등록 폴더").font(.biu(.headline, weight: .semibold))
+
+                    GroupBox {
+                        HStack(spacing: 16) {
+                            VStack(alignment: .leading, spacing: 4) {
+                                Text("최근 방문 폴더 \(explorer.cacheCount)개 저장됨")
+                                    .font(.biu(.callout, weight: .medium))
+                                Text("최대 100개 폴더의 계산 결과와 마지막 위치를 이 Mac에만 보관합니다.")
+                                    .font(.biu(.caption))
+                                    .foregroundStyle(.secondary)
+                            }
+                            Spacer()
+                            Button("탐색 캐시 모두 삭제", role: .destructive) {
+                                explorer.clearCache()
+                            }
+                            .font(.biu(.callout, weight: .medium))
+                            .buttonStyle(.bordered)
+                            .controlSize(.large)
+                            .disabled(explorer.cacheCount == 0)
+                        }
+                        .padding(8)
+                    } label: {
+                        Text("용량 탐색 캐시").font(.biu(.headline, weight: .semibold))
+                    }
+
+                    GroupBox {
+                        VStack(alignment: .leading, spacing: 10) {
+                            Toggle("조용한 모드", isOn: $quietMode)
+                                .font(.biu(.body))
+                                .controlSize(.large)
+                                .onChange(of: quietMode) { _, enabled in
+                                    if enabled {
+                                        BiuFloatingPanelController.shared.hide()
+                                    }
+                                }
+                            Toggle("중요 이벤트에 플로팅 비우 표시", isOn: $floatingEnabled)
+                                .font(.biu(.body))
+                                .controlSize(.large)
+                                .onChange(of: floatingEnabled) { _, enabled in
+                                    if enabled, !quietMode {
+                                        BiuFloatingPanelController.shared.show(
+                                            message: model.assistantMessage,
+                                            state: model.biuState
+                                        )
+                                    } else {
+                                        BiuFloatingPanelController.shared.hide()
+                                    }
+                                }
+                            Text("포커스를 가져오지 않는 작은 패널로 발견·주의·완료·오류 이벤트만 알려줍니다.")
+                                .font(.biu(.caption))
+                                .foregroundStyle(.secondary)
+                        }
+                        .padding(8)
+                    } label: {
+                        Text("도우미 알림").font(.biu(.headline, weight: .semibold))
+                    }
+
+                    GroupBox {
+                        VStack(alignment: .leading, spacing: 12) {
+                            Text("정리를 실행했을 때 대상 경로, 작업 방식, 실행 시각, 성공·실패 이유와 예상·실제 확보량을 이 Mac에만 저장합니다. 파일 백업이나 복구본은 아닙니다.")
+                                .font(.biu(.caption))
+                                .foregroundStyle(.secondary)
+                                .fixedSize(horizontal: false, vertical: true)
+                            HStack(spacing: 10) {
+                                Text("저장된 실행 기록 \(model.receipts.count)개")
+                                    .font(.biu(.callout, weight: .medium))
+                                Spacer()
+                                Button("JSON 내보내기") { model.exportReceipts() }
+                                    .font(.biu(.callout, weight: .medium))
+                                    .buttonStyle(.bordered)
+                                    .controlSize(.large)
+                                    .disabled(model.receipts.isEmpty)
+                                Button("기록 모두 삭제", role: .destructive) { showHistoryDeletionWarning = true }
+                                    .font(.biu(.callout, weight: .medium))
+                                    .buttonStyle(.bordered)
+                                    .controlSize(.large)
+                                    .disabled(model.receipts.isEmpty)
+                            }
+                        }
+                        .padding(8)
+                    } label: {
+                        Text("정리 기록").font(.biu(.headline, weight: .semibold))
+                    }
+                }
+                .padding(24)
             }
-            Toggle("검증된 재생성 캐시 즉시 삭제 허용", isOn: Binding(
-                get: { model.allowsImmediateCacheDeletion },
-                set: { enabled in
-                    if enabled {
-                        showImmediateDeletionWarning = true
-                    } else {
-                        model.allowsImmediateCacheDeletion = false
-                    }
-                }
-            ))
-                .font(.biu(.body))
-                .controlSize(.large)
-            Text("끄면 모든 파일 항목을 휴지통으로 이동합니다. 공식 CLI 작업은 별도로 표시됩니다.")
-                .font(.biu(.caption)).foregroundStyle(.secondary)
-            Toggle("조용한 모드", isOn: $quietMode)
-                .font(.biu(.body))
-                .controlSize(.large)
-                .onChange(of: quietMode) { _, enabled in
-                    if enabled {
-                        BiuFloatingPanelController.shared.hide()
-                    }
-                }
-            Toggle("중요 이벤트에 플로팅 비우 표시", isOn: $floatingEnabled)
-                .font(.biu(.body))
-                .controlSize(.large)
-                .onChange(of: floatingEnabled) { _, enabled in
-                    if enabled, !quietMode {
-                        BiuFloatingPanelController.shared.show(
-                            message: model.assistantMessage,
-                            state: model.biuState
-                        )
-                    } else {
-                        BiuFloatingPanelController.shared.hide()
-                    }
-                }
-            Text("포커스를 가져오지 않는 작은 패널로 발견·주의·완료·오류 이벤트만 알려줍니다.")
-                .font(.biu(.caption)).foregroundStyle(.secondary)
-            GroupBox {
-                HStack {
-                    Text("로컬에 저장된 기록 \(model.receipts.count)개")
-                        .font(.biu(.callout))
-                    Spacer()
-                    Button("내보내기") { model.exportReceipts() }
-                        .font(.biu(.callout, weight: .medium))
-                        .disabled(model.receipts.isEmpty)
-                    Button("모두 삭제", role: .destructive) { showHistoryDeletionWarning = true }
-                        .font(.biu(.callout, weight: .medium))
-                        .disabled(model.receipts.isEmpty)
-                }
-                .padding(6)
-            } label: {
-                Text("정리 기록").font(.biu(.headline, weight: .semibold))
-            }
-            Spacer()
         }
-        .padding(26).frame(width: 640, height: 520)
+        .frame(width: 700, height: 640)
         .alert("정리 기록을 모두 삭제할까요?", isPresented: $showHistoryDeletionWarning) {
             Button("취소", role: .cancel) {}
             Button("삭제", role: .destructive) { model.deleteAllReceipts() }
@@ -1050,7 +1577,7 @@ private struct SettingsView: View {
     }
 }
 
-private struct RiskBadge: View {
+struct RiskBadge: View {
     let risk: CleanupRisk
     private var color: Color {
         switch risk { case .safe: .green; case .review: .orange; case .avoid: .red }

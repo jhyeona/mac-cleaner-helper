@@ -57,3 +57,12 @@ extension Font {
         BiuTypography.font(style, weight: weight)
     }
 }
+
+extension View {
+    /// Keeps compact symbol buttons visually small while giving them a reliable
+    /// desktop hit target. Apply this to the button label, not the Button itself.
+    func biuIconHitTarget(_ size: CGFloat = 32) -> some View {
+        frame(width: size, height: size)
+            .contentShape(Rectangle())
+    }
+}

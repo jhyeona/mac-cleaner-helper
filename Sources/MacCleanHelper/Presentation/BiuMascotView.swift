@@ -24,40 +24,10 @@ struct BiuMascotView: View {
 
     var body: some View {
         ZStack {
-            ZStack {
-                if let restingImage {
-                    Image(nsImage: restingImage)
-                        .resizable()
-                        .interpolation(.high)
-                        .scaledToFit()
-                }
-
-                if let blinkingImage {
-                    Image(nsImage: blinkingImage)
-                        .resizable()
-                        .interpolation(.high)
-                        .scaledToFit()
-                        .opacity(isBlinking ? 1 : 0)
-                        .mask {
-                            GeometryReader { geometry in
-                                RoundedRectangle(cornerRadius: geometry.size.width * 0.08)
-                                    .frame(
-                                        width: geometry.size.width * 0.43,
-                                        height: geometry.size.height * 0.28
-                                    )
-                                    .offset(
-                                        x: geometry.size.width * 0.32,
-                                        y: geometry.size.height * 0.27
-                                    )
-                                    .blur(radius: max(1, geometry.size.width * 0.015))
-                            }
-                        }
-                }
-            }
-            .frame(width: size, height: size)
+            characterArtwork
             .offset(
-                x: -size * 0.08,
-                y: reduceMotion ? 0 : (isFloating ? -size * 0.025 : size * 0.025)
+                x: -size * 0.1,
+                y: reduceMotion ? -size * 0.04 : (isFloating ? -size * 0.065 : -size * 0.015)
             )
             .animation(
                 reduceMotion ? nil : .easeInOut(duration: 1.8).repeatForever(autoreverses: true),
@@ -75,8 +45,8 @@ struct BiuMascotView: View {
                         anchor: .bottomLeading
                     )
                     .offset(
-                        x: size * 0.43,
-                        y: reduceMotion ? -size * 0.22 : (wandIsPlaying ? -size * 0.31 : -size * 0.16)
+                        x: size * 0.34,
+                        y: reduceMotion ? -size * 0.2 : (wandIsPlaying ? -size * 0.29 : -size * 0.14)
                     )
                     .animation(
                         reduceMotion ? nil : .easeInOut(duration: 1.15).repeatForever(autoreverses: true),
@@ -85,9 +55,9 @@ struct BiuMascotView: View {
                     .accessibilityHidden(true)
             }
         }
-        // The source art has transparent breathing room around the wool fibers.
-        // Keep that visually, but do not make the sidebar reserve the full canvas height.
-        .frame(width: size * 1.32, height: size * 0.9)
+        // The PNG includes generous transparent margins. The layout uses a cropped
+        // viewport so those invisible pixels never become visible top padding.
+        .frame(width: size * 1.12, height: size * 0.8)
         .accessibilityElement(children: .ignore)
         .accessibilityLabel("마술봉과 노는 작은 펠트 먼지 정령 비우")
         .onAppear {
@@ -110,6 +80,44 @@ struct BiuMascotView: View {
                 }
             }
         }
+    }
+
+    private var characterArtwork: some View {
+        ZStack {
+            if let restingImage {
+                Image(nsImage: restingImage)
+                    .resizable()
+                    .interpolation(.high)
+                    .scaledToFit()
+            }
+
+            if let blinkingImage {
+                Image(nsImage: blinkingImage)
+                    .resizable()
+                    .interpolation(.high)
+                    .scaledToFit()
+                    .opacity(isBlinking ? 1 : 0)
+                    .mask {
+                        GeometryReader { geometry in
+                            RoundedRectangle(cornerRadius: geometry.size.width * 0.08)
+                                .frame(
+                                    width: geometry.size.width * 0.43,
+                                    height: geometry.size.height * 0.28
+                                )
+                                .offset(
+                                    x: geometry.size.width * 0.32,
+                                    y: geometry.size.height * 0.27
+                                )
+                                .blur(radius: max(1, geometry.size.width * 0.015))
+                        }
+                    }
+            }
+        }
+        .frame(width: size, height: size)
+        .scaleEffect(1.16)
+        .offset(y: -size * 0.025)
+        .frame(width: size * 0.82, height: size * 0.84)
+        .clipped()
     }
 
     private func image(named name: String) -> NSImage? {

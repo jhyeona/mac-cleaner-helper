@@ -18,8 +18,10 @@ final class FolderBookmarkStore: ObservableObject {
     static let appDomain = "io.biu.mac-clean-helper"
     static let storageKey = "Biu.registeredFolders.v2"
     static let legacyStorageKey = "Biu.registeredFolderBookmarks.v1"
+    static let selectionKey = "Biu.selectedRegisteredFolderPaths.v1"
 
     @Published private(set) var folders: [RegisteredFolder] = []
+    @Published private(set) var selectedFolderPaths: Set<String> = []
 
     private let defaults: UserDefaults
 
@@ -29,6 +31,25 @@ final class FolderBookmarkStore: ObservableObject {
             ?? .standard
         migrateLegacyBookmarksIfNeeded()
         reload()
+        restoreSelection()
+    }
+
+    var selectedFolders: [RegisteredFolder] {
+        folders.filter { selectedFolderPaths.contains($0.url.standardizedFileURL.path) }
+    }
+
+    func isSelected(_ folder: RegisteredFolder) -> Bool {
+        selectedFolderPaths.contains(folder.url.standardizedFileURL.path)
+    }
+
+    func setSelected(_ selected: Bool, for folder: RegisteredFolder) {
+        let path = folder.url.standardizedFileURL.path
+        if selected {
+            selectedFolderPaths.insert(path)
+        } else {
+            selectedFolderPaths.remove(path)
+        }
+        persistSelection()
     }
 
     func add(_ url: URL) throws {
@@ -51,9 +72,13 @@ final class FolderBookmarkStore: ObservableObject {
         }
         try save(records)
         reload()
+        selectedFolderPaths.insert(normalizedURL.path)
+        persistSelection()
     }
 
     func remove(_ folder: RegisteredFolder) {
+        selectedFolderPaths.remove(folder.url.standardizedFileURL.path)
+        persistSelection()
         let retained = storedRecords().filter {
             normalizedPath($0.path) != folder.url.standardizedFileURL.path
         }
@@ -136,6 +161,21 @@ final class FolderBookmarkStore: ObservableObject {
     private func save(_ records: [RegisteredFolderRecord]) throws {
         let data = try JSONEncoder().encode(records)
         defaults.set(data, forKey: Self.storageKey)
+    }
+
+    private func restoreSelection() {
+        let availablePaths = Set(folders.map { $0.url.standardizedFileURL.path })
+        if defaults.object(forKey: Self.selectionKey) == nil {
+            selectedFolderPaths = availablePaths
+        } else {
+            let stored = Set(defaults.stringArray(forKey: Self.selectionKey) ?? [])
+            selectedFolderPaths = stored.intersection(availablePaths)
+        }
+        persistSelection()
+    }
+
+    private func persistSelection() {
+        defaults.set(selectedFolderPaths.sorted(), forKey: Self.selectionKey)
     }
 
     private func normalizedPath(_ path: String) -> String {

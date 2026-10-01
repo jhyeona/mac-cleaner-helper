@@ -33,9 +33,15 @@ RESOURCES_DIR="$APP_DIR/Contents/Resources"
 
 mkdir -p "$MACOS_DIR" "$RESOURCES_DIR"
 cp -f "$PROJECT_DIR/Support/Info.plist" "$APP_DIR/Contents/Info.plist"
+cp -f "$PROJECT_DIR/Support/Biu.icns" "$RESOURCES_DIR/Biu.icns"
 cp -f "$PRODUCT_DIR/MacCleanHelper" "$MACOS_DIR/Biu"
 chmod +x "$MACOS_DIR/Biu"
 ditto "$PRODUCT_DIR/MacCleanHelper_MacCleanHelper.bundle" \
   "$RESOURCES_DIR/MacCleanHelper_MacCleanHelper.bundle"
+
+# SwiftPM signs the standalone executable. Copying that signature into an app
+# bundle makes macOS validate it with the wrong resource envelope, so sign the
+# completed bundle once all resources are in place.
+codesign --force --deep --sign - "$APP_DIR"
 
 print "$APP_DIR"

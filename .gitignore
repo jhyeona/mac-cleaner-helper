@@ -2,4 +2,13 @@
 .swiftpm/
 .DS_Store
 DerivedData/
+xcuserdata/
 *.xcuserstate
+
+# Local configuration and credentials
+.env
+.env.*
+!.env.example
+*.p8
+*.p12
+*.mobileprovision

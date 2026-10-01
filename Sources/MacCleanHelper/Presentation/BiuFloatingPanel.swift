@@ -99,16 +99,19 @@ private struct BiuFloatingPanelView: View {
 
             HStack(spacing: 10) {
                 Button("조용한 모드", action: enableQuietMode)
-                    .buttonStyle(.plain)
+                    .buttonStyle(.bordered)
+                    .controlSize(.large)
                 Button(action: openSettings) {
                     Label("설정", systemImage: "gearshape")
                 }
-                .buttonStyle(.plain)
+                .buttonStyle(.bordered)
+                .controlSize(.large)
                 Spacer()
                 Button(actionTitle, action: openApp)
                     .buttonStyle(.borderedProminent)
                     .keyboardShortcut(.defaultAction)
                 Button("닫기", action: close)
+                    .controlSize(.large)
                     .keyboardShortcut(.cancelAction)
             }
             .font(.biu(.caption))

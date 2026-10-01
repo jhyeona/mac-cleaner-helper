@@ -10,6 +10,8 @@
     <string>Biu</string>
     <key>CFBundleIdentifier</key>
     <string>io.biu.mac-clean-helper</string>
+    <key>CFBundleIconFile</key>
+    <string>Biu.icns</string>
     <key>CFBundleInfoDictionaryVersion</key>
     <string>6.0</string>
     <key>CFBundleName</key>

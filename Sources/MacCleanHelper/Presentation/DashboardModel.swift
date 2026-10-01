@@ -146,8 +146,11 @@ final class DashboardModel: ObservableObject {
     )
     @Published private(set) var scanIssues: [ScanIssue] = []
     @Published private(set) var selectedIDs: Set<CleanupItem.ID> = []
+    @Published private(set) var explorerBasketItems: [CleanupItem.ID: CleanupItem] = [:]
     @Published private(set) var receipts: [CleanupReceipt] = []
     @Published private(set) var lastAnalysisAt: Date?
+    @Published private(set) var lastSuccessfulCleanupPaths: [String] = []
+    @Published private(set) var cleanupInvalidationID = UUID()
     @Published private(set) var inspectedID: CleanupItem.ID?
     @Published var errorMessage: String?
     @Published var confirmation: CleanupConfirmation?
@@ -260,7 +263,13 @@ final class DashboardModel: ObservableObject {
     }
 
     var selectedItems: [CleanupItem] {
-        items.filter { selectedIDs.contains($0.id) }
+        var byID = Dictionary(uniqueKeysWithValues: items
+            .filter { selectedIDs.contains($0.id) }
+            .map { ($0.id, $0) })
+        for (id, item) in explorerBasketItems where selectedIDs.contains(id) {
+            byID[id] = item
+        }
+        return byID.values.sorted { $0.path.localizedStandardCompare($1.path) == .orderedAscending }
     }
 
     var selectedSize: Int64 { selectedItems.reduce(0) { $0 + $1.size } }
@@ -272,7 +281,7 @@ final class DashboardModel: ObservableObject {
 
     var hasBroadRegisteredFolder: Bool {
         let homePath = FileManager.default.homeDirectoryForCurrentUser.standardizedFileURL.path
-        return folderStore.folders.contains { folder in
+        return folderStore.selectedFolders.contains { folder in
             guard !folder.isStale else { return false }
             let path = folder.url.standardizedFileURL.path
             return path == "/" || path == homePath
@@ -316,8 +325,10 @@ final class DashboardModel: ObservableObject {
         case .error:
             "작업을 마치지 못했어요. 파일은 보호했고, 원인을 아래에서 확인할 수 있어요."
         case .resting:
-            if !folderStore.folders.isEmpty, lastAnalysisAt == nil {
+            if !folderStore.selectedFolders.isEmpty, lastAnalysisAt == nil {
                 "등록한 개발 폴더가 준비됐어요. 분석을 시작하면 공간을 쓰는 항목과 영향을 함께 보여드릴게요."
+            } else if !folderStore.folders.isEmpty, folderStore.selectedFolders.isEmpty {
+                "분석할 개발 폴더를 하나 이상 선택해 주세요. 등록은 유지한 채 분석 대상만 바꿀 수 있어요."
             } else {
                 "지금 보여드릴 정리 후보가 없어요. 다른 개발 폴더를 등록하거나 추천 영역을 살펴볼까요?"
             }
@@ -332,6 +343,7 @@ final class DashboardModel: ObservableObject {
         panel.canChooseFiles = false
         panel.canChooseDirectories = true
         panel.allowsMultipleSelection = true
+        panel.showsHiddenFiles = true
 
         guard panel.runModal() == .OK else { return }
         do {
@@ -343,9 +355,11 @@ final class DashboardModel: ObservableObject {
     }
 
     func requestRegisteredFolderScan() {
-        let availableFolders = folderStore.folders.filter { !$0.isStale }
+        let availableFolders = folderStore.selectedFolders.filter { !$0.isStale }
         guard !availableFolders.isEmpty else {
-            errorMessage = "등록한 폴더를 찾을 수 없습니다. 설정에서 제거한 뒤 다시 등록해 주세요."
+            errorMessage = folderStore.selectedFolders.isEmpty
+                ? "분석할 등록 폴더를 하나 이상 선택해 주세요."
+                : "선택한 폴더를 찾을 수 없습니다. 설정에서 제거한 뒤 다시 등록해 주세요."
             return
         }
         if hasBroadRegisteredFolder {
@@ -356,13 +370,13 @@ final class DashboardModel: ObservableObject {
     }
 
     func scanRegisteredFolders() {
-        let folders = folderStore.folders.filter { !$0.isStale }
+        let folders = folderStore.selectedFolders.filter { !$0.isStale }
         guard !folders.isEmpty else {
-            errorMessage = "분석할 수 있는 등록 폴더가 없습니다."
+            errorMessage = "분석할 수 있는 선택 폴더가 없습니다."
             return
         }
         let tokens = folders.map(folderStore.beginAccessing)
-        let staleIssues = folderStore.folders.filter(\.isStale).map {
+        let staleIssues = folderStore.selectedFolders.filter(\.isStale).map {
             ScanIssue(path: $0.url.path, message: "폴더를 찾을 수 없어 건너뛰었습니다.")
         }
         scan(folders: folders.map(\.url), accessTokens: tokens, initialIssues: staleIssues)
@@ -482,9 +496,46 @@ final class DashboardModel: ObservableObject {
         }
         if selectedIDs.contains(item.id) {
             selectedIDs.remove(item.id)
+            explorerBasketItems.removeValue(forKey: item.id)
         } else {
+            if selectedItems.contains(where: { selected in
+                item.path.hasPrefix(selected.path + "/")
+            }) {
+                return
+            }
+            let descendants = selectedItems.filter { selected in
+                selected.path.hasPrefix(item.path + "/")
+            }
+            selectedIDs.subtract(descendants.map(\.id))
+            for descendant in descendants {
+                explorerBasketItems.removeValue(forKey: descendant.id)
+            }
             selectedIDs.insert(item.id)
         }
+    }
+
+    func toggleExplorerSelection(_ item: CleanupItem, calculationIsComplete: Bool) {
+        if selectedIDs.contains(item.id) {
+            toggleSelection(of: item)
+            return
+        }
+        guard calculationIsComplete else {
+            errorMessage = "크기 계산이 끝난 항목만 정리 바구니에 담을 수 있습니다."
+            return
+        }
+        guard item.candidate.kind != .symbolicLink, item.candidate.kind != .inaccessible else {
+            errorMessage = "심볼릭 링크와 접근 불가 항목은 정리 바구니에 담을 수 없습니다."
+            return
+        }
+        explorerBasketItems[item.id] = item
+        toggleSelection(of: item)
+        if !selectedIDs.contains(item.id) {
+            explorerBasketItems.removeValue(forKey: item.id)
+        }
+    }
+
+    func isInBasket(path: String) -> Bool {
+        selectedIDs.contains(path)
     }
 
     func inspect(_ itemID: CleanupItem.ID?) {
@@ -557,7 +608,10 @@ final class DashboardModel: ObservableObject {
             didFailCleanupThisSession = newReceipts.contains { !$0.succeeded }
             let succeeded = Set(newReceipts.filter(\.succeeded).map(\.path))
             items.removeAll { succeeded.contains($0.path) }
+            for path in succeeded { explorerBasketItems.removeValue(forKey: path) }
             selectedIDs.subtract(succeeded)
+            lastSuccessfulCleanupPaths = succeeded.sorted()
+            cleanupInvalidationID = UUID()
             persistSnapshot()
             isCleaning = false
             cleanupResult = CleanupResult(receipts: newReceipts)

@@ -64,6 +64,30 @@ enum CleanupCategory: String, CaseIterable, Codable, Sendable {
 
 enum CandidateKind: String, Codable, Sendable {
     case regularFile, directory, symbolicLink, package, inaccessible
+
+    var title: String {
+        switch self {
+        case .regularFile: "파일"
+        case .directory: "폴더"
+        case .symbolicLink: "심볼릭 링크"
+        case .package: "패키지"
+        case .inaccessible: "접근 불가"
+        }
+    }
+
+    var symbol: String {
+        switch self {
+        case .regularFile: "doc"
+        case .directory: "folder"
+        case .symbolicLink: "link"
+        case .package: "shippingbox"
+        case .inaccessible: "lock.trianglebadge.exclamationmark"
+        }
+    }
+
+    var canBrowseContents: Bool {
+        self == .directory || self == .package
+    }
 }
 
 enum DetectionSource: Hashable, Codable, Sendable {
