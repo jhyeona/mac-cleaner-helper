@@ -1,12 +1,12 @@
 import AppKit
 import SwiftUI
 
-private enum DashboardSection: String, CaseIterable {
+enum DashboardSection: String, CaseIterable {
     case candidates
     case explorer
 
     var title: String { self == .candidates ? "정리 후보" : "용량 탐색" }
-    var symbol: String { self == .candidates ? "sparkles" : "externaldrive.badge.magnifyingglass" }
+    var symbol: String { self == .candidates ? "sparkles" : "externaldrive" }
 }
 
 struct DashboardView: View {
@@ -61,12 +61,16 @@ struct DashboardView: View {
 
     var body: some View {
         VStack(spacing: 0) {
-            NavigationSplitView {
+            // Keep every pane in the same content coordinate space. A nested
+            // NavigationSplitView applies a toolbar inset to its sidebar; moving
+            // that content back with negative padding broke mouse hit testing.
+            HSplitView {
                 SidebarView(model: model, section: $section, showSettings: $showSettings)
-            } content: {
+                    .frame(minWidth: 250, idealWidth: 260, maxWidth: 320)
                 contentColumn
-            } detail: {
+                    .frame(minWidth: 380, idealWidth: 470, maxWidth: .infinity, maxHeight: .infinity)
                 detailColumn
+                    .frame(minWidth: 280, idealWidth: 340, maxWidth: .infinity, maxHeight: .infinity)
             }
             Divider()
             HStack(spacing: 12) {
@@ -193,22 +197,6 @@ private struct SidebarFooterButtonStyle: ButtonStyle {
     }
 }
 
-private struct SidebarActionLabel: View {
-    let title: String
-    let systemImage: String
-
-    var body: some View {
-        HStack(spacing: 8) {
-            Image(systemName: systemImage)
-                .frame(width: 18)
-            Text(title)
-            Spacer(minLength: 0)
-        }
-        .padding(.horizontal, 12)
-        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .leading)
-    }
-}
-
 private struct SidebarView: View {
     @ObservedObject var model: DashboardModel
     @ObservedObject private var folderStore: FolderBookmarkStore
@@ -231,13 +219,7 @@ private struct SidebarView: View {
                 VStack(alignment: .leading, spacing: 14) {
                     BiuAssistantHeader(state: model.biuState, message: model.assistantMessage)
 
-                    Picker("화면", selection: $section) {
-                        ForEach(DashboardSection.allCases, id: \.self) { section in
-                            Label(section.title, systemImage: section.symbol).tag(section)
-                        }
-                    }
-                    .pickerStyle(.segmented)
-                    .accessibilityIdentifier("sidebar.section-picker")
+                    SidebarSectionPicker(selection: $section)
 
                     HStack(spacing: 8) {
                         Button {
@@ -251,11 +233,13 @@ private struct SidebarView: View {
                             MetricView(title: "재생성 가능 보기", value: model.reclaimableSize, color: .mint)
                         }
                         .buttonStyle(.plain)
+                        .accessibilityIdentifier("sidebar.safe-items")
                         .help("재생성 가능한 항목을 큰 순서로 보기")
                         Button { model.showBasket = true } label: {
                             MetricView(title: "바구니 열기", value: model.selectedSize, color: .blue)
                         }
                         .buttonStyle(.plain)
+                        .accessibilityIdentifier("sidebar.open-basket")
                         .disabled(model.isCleaning)
                     }
 
@@ -382,10 +366,7 @@ private struct SidebarView: View {
                     }
                 }
                 .padding(.horizontal, 16)
-                // NavigationSplitView gives sidebar scroll content an additional
-                // toolbar-height inset. Pull the first card back to the visible
-                // top edge instead of leaving a blank strip above the mascot.
-                .padding(.top, -38)
+                .padding(.top, 12)
                 .padding(.bottom, 12)
             }
             .contentMargins(.top, 0, for: .scrollContent)
@@ -460,6 +441,7 @@ private struct SidebarView: View {
                     }
                     .font(.biu(.callout, weight: .medium))
                     .buttonStyle(SidebarFooterButtonStyle())
+                    .accessibilityIdentifier("sidebar.settings")
 
                     if floatingEnabled {
                         Button {
@@ -484,7 +466,6 @@ private struct SidebarView: View {
             .padding(.vertical, 8)
             .background(.bar)
         }
-        .navigationSplitViewColumnWidth(min: 250, ideal: 280, max: 320)
         .alert(
             "등록 목록에서 삭제할까요?",
             isPresented: Binding(
