@@ -99,7 +99,7 @@ final class FolderExplorerCacheStore {
         var envelope = loadEnvelope()
         envelope.snapshots.removeAll { snapshot in
             targets.contains { target in
-                target == snapshot.folderPath || target.hasPrefix(snapshot.folderPath + "/")
+                snapshot.folderPath == "/" || target == snapshot.folderPath || target.hasPrefix(snapshot.folderPath + "/")
             }
         }
         if let last = envelope.lastFolderPath,

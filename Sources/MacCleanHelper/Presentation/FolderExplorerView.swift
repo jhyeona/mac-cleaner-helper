@@ -4,6 +4,9 @@ import SwiftUI
 struct FolderExplorerContentView: View {
     @ObservedObject var explorer: FolderExplorerModel
     @ObservedObject var dashboard: DashboardModel
+    @State private var showIssues = false
+    @State private var showPathEntry = false
+    @State private var pathInput = ""
 
     var body: some View {
         VStack(spacing: 0) {
@@ -19,6 +22,23 @@ struct FolderExplorerContentView: View {
                     progressBar
                 }
             }
+        }
+        .sheet(isPresented: $showIssues) { ScanIssuesView(issues: explorer.issues) }
+        .sheet(isPresented: $showPathEntry) {
+            VStack(alignment: .leading, spacing: 16) {
+                Text("폴더 경로로 이동").font(.biu(.headline))
+                TextField("예: ~/Library/Caches", text: $pathInput)
+                    .textFieldStyle(.roundedBorder)
+                    .onSubmit { openEnteredPath() }
+                HStack {
+                    Button("취소", role: .cancel) { showPathEntry = false }
+                    Spacer()
+                    Button("열기") { openEnteredPath() }
+                        .keyboardShortcut(.defaultAction)
+                        .disabled(pathInput.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+                }
+            }
+            .padding(24).frame(width: 460)
         }
         .alert("시동 볼륨을 탐색할까요?", isPresented: $explorer.showStartupDiskWarning) {
             Button("취소", role: .cancel) {}
@@ -37,9 +57,10 @@ struct FolderExplorerContentView: View {
     }
 
     private var entryTable: some View {
-        ScrollView(.horizontal) {
+        GeometryReader { geometry in
+            let showsDetails = geometry.size.width >= 760
             VStack(spacing: 0) {
-                entryHeader
+                entryHeader(showsDetails: showsDetails)
                 Divider()
                 if explorer.visibleEntries.isEmpty, !explorer.isScanning {
                     BiuEmptyState(
@@ -56,6 +77,8 @@ struct FolderExplorerContentView: View {
                             ForEach(explorer.visibleEntries) { entry in
                                 ExplorerEntryRow(
                                     entry: entry,
+                                    showsDetails: showsDetails,
+                                    isBusy: dashboard.isPreparingCleanup || dashboard.isCleaning,
                                     assessment: explorer.cleanupItem(for: entry).assessment,
                                     isSelected: explorer.selectedPath == entry.path,
                                     isInBasket: dashboard.isInBasket(path: entry.path),
@@ -75,7 +98,7 @@ struct FolderExplorerContentView: View {
                     }
                 }
             }
-            .frame(minWidth: 700, maxHeight: .infinity, alignment: .top)
+            .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
         }
     }
 
@@ -85,9 +108,13 @@ struct FolderExplorerContentView: View {
                 VStack(alignment: .leading, spacing: 5) {
                     Text("용량 탐색")
                         .font(.biu(.title, weight: .bold))
-                    Text("터미널의 du처럼 바로 아래 항목을 먼저 보여주고, 폴더 크기를 최대 2개씩 계산합니다. 파일은 변경하지 않습니다.")
+                    Text("공간을 많이 쓰는 폴더부터 살펴보고 정리할 항목을 바구니에 담으세요.")
                         .font(.biu(.body))
                         .foregroundStyle(.secondary)
+                }
+                HStack {
+                    Button("다른 폴더 열기…", systemImage: "folder") { explorer.chooseFolder() }
+                    pathButton
                 }
                 LazyVGrid(columns: [GridItem(.adaptive(minimum: 230), spacing: 12)], spacing: 12) {
                     ForEach(explorer.locations) { location in
@@ -163,9 +190,14 @@ struct FolderExplorerContentView: View {
                 }
             }
             HStack(spacing: 8) {
+                Button { explorer.chooseFolder() } label: {
+                    Image(systemName: "folder.badge.plus").biuIconHitTarget()
+                }
+                .help("다른 폴더 열기")
+                pathButton
                 TextField("이름 또는 경로 검색", text: $explorer.searchText)
                     .textFieldStyle(.roundedBorder)
-                Picker("정렬", selection: $explorer.sortKey) {
+                Picker("정렬", selection: Binding(get: { explorer.sortKey }, set: { explorer.selectSortKey($0) })) {
                     ForEach(ExplorerSortKey.allCases) { key in Text(key.title).tag(key) }
                 }
                 .labelsHidden()
@@ -182,26 +214,51 @@ struct FolderExplorerContentView: View {
         .padding(12)
     }
 
+    private var pathButton: some View {
+        Button {
+            pathInput = explorer.currentURL?.path ?? "~/"
+            showPathEntry = true
+        } label: {
+            Image(systemName: "arrow.right.to.line").biuIconHitTarget()
+        }
+        .help("경로로 이동 (⌘⇧G)")
+        .accessibilityLabel("경로로 이동")
+        .keyboardShortcut("g", modifiers: [.command, .shift])
+    }
+
+    private func openEnteredPath() {
+        guard !pathInput.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return }
+        showPathEntry = false
+        explorer.openPath(pathInput)
+    }
+
     private var breadcrumb: some View {
-        ScrollView(.horizontal, showsIndicators: false) {
-            HStack(spacing: 3) {
-                ForEach(Array(explorer.breadcrumbURLs.enumerated()), id: \.element.path) { index, url in
-                    if index > 0 {
-                        Image(systemName: "chevron.right")
-                            .font(.system(size: 8, weight: .bold))
-                            .foregroundStyle(.tertiary)
+        ScrollViewReader { proxy in
+            ScrollView(.horizontal, showsIndicators: false) {
+                HStack(spacing: 3) {
+                    ForEach(Array(explorer.breadcrumbURLs.enumerated()), id: \.element.path) { index, url in
+                        if index > 0 {
+                            Image(systemName: "chevron.right")
+                                .font(.system(size: 8, weight: .bold))
+                                .foregroundStyle(.tertiary)
+                        }
+                        Button(url.path == "/" ? "/" : url.lastPathComponent) {
+                            explorer.requestOpen(url, enterPackage: true)
+                        }
+                        .buttonStyle(.plain)
+                        .font(.biu(.caption, weight: .semibold))
+                        .frame(minHeight: 32)
+                        .contentShape(Rectangle())
+                        .id(url.path)
                     }
-                    Button(url.path == "/" ? "/" : url.lastPathComponent) {
-                        explorer.requestOpen(url, enterPackage: true)
-                    }
-                    .buttonStyle(.plain)
-                    .font(.biu(.caption, weight: .semibold))
-                    .frame(minHeight: 32)
-                    .contentShape(Rectangle())
                 }
             }
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .onAppear { proxy.scrollTo(explorer.currentURL?.path, anchor: .trailing) }
+            .onChange(of: explorer.currentURL) { _, url in
+                proxy.scrollTo(url?.path, anchor: .trailing)
+            }
         }
-        .frame(maxWidth: .infinity, alignment: .leading)
     }
 
     @ViewBuilder
@@ -224,15 +281,17 @@ struct FolderExplorerContentView: View {
         }
     }
 
-    private var entryHeader: some View {
+    private func entryHeader(showsDetails: Bool) -> some View {
         HStack(spacing: 10) {
             Text("이름 / 유형").frame(maxWidth: .infinity, alignment: .leading)
             Text("실제 크기").frame(width: 76, alignment: .trailing)
+            if showsDetails {
             Text("논리 크기").frame(width: 76, alignment: .trailing)
             Text("수정일").frame(width: 82, alignment: .trailing)
             Text("안전도").frame(width: 84, alignment: .trailing)
             Text("상태").frame(width: 68, alignment: .trailing)
-            Color.clear.frame(width: 70)
+            }
+            Color.clear.frame(width: 70, height: 1)
         }
         .font(.biu(.caption, weight: .semibold))
         .foregroundStyle(.secondary)
@@ -246,11 +305,12 @@ struct FolderExplorerContentView: View {
             if explorer.isScanning { ProgressView().controlSize(.small) }
             Text(explorer.isScanning
                  ? "폴더 \(explorer.progress.completedDirectoryCount)/\(explorer.progress.totalDirectoryCount) · \(explorer.progress.visitedItemCount)개 확인"
-                 : "계산 완료")
+                 : "\(explorer.entries.count)개 항목")
                 .font(.biu(.caption).monospacedDigit())
             Spacer()
             if !explorer.issues.isEmpty {
-                Text("접근 오류 \(explorer.issues.count)개")
+                Button("접근 오류 \(explorer.issues.count)개") { showIssues = true }
+                    .buttonStyle(.plain)
                     .font(.biu(.caption))
                     .foregroundStyle(.orange)
                     .help(explorer.issues.prefix(10).map { "\($0.path): \($0.message)" }.joined(separator: "\n"))
@@ -273,6 +333,8 @@ struct FolderExplorerContentView: View {
 
 private struct ExplorerEntryRow: View {
     let entry: ExplorerEntry
+    let showsDetails: Bool
+    let isBusy: Bool
     let assessment: SafetyAssessment
     let isSelected: Bool
     let isInBasket: Bool
@@ -301,10 +363,19 @@ private struct ExplorerEntryRow: View {
                     Text(entry.kind.title)
                         .font(.biu(.caption2))
                         .foregroundStyle(.secondary)
+                    if !showsDetails {
+                        HStack(spacing: 4) {
+                            Text(assessment.risk.title)
+                                .foregroundStyle(assessment.risk == .avoid ? Color.red : Color.secondary)
+                            calculationState
+                        }
+                        .font(.biu(.caption2))
+                    }
                 }
             }
             .frame(maxWidth: .infinity, alignment: .leading)
             sizeText(entry.allocatedSize).frame(width: 76, alignment: .trailing)
+            if showsDetails {
             sizeText(entry.logicalSize).frame(width: 76, alignment: .trailing)
             Text(entry.modifiedAt?.formatted(date: .numeric, time: .omitted) ?? "—")
                 .font(.biu(.caption))
@@ -314,6 +385,7 @@ private struct ExplorerEntryRow: View {
                 .frame(width: 84, alignment: .trailing)
             calculationState
                 .frame(width: 68, alignment: .trailing)
+            }
             HStack(spacing: 5) {
                 if entry.kind == .directory {
                     Button(action: open) {
@@ -330,7 +402,7 @@ private struct ExplorerEntryRow: View {
                     Image(systemName: isInBasket ? "basket.fill" : "basket")
                         .biuIconHitTarget()
                 }
-                .disabled(assessment.risk == .avoid || entry.calculationState != .complete)
+                .disabled(isBusy || (!isInBasket && (assessment.risk == .avoid || entry.calculationState != .complete)))
                 .help(isInBasket ? "바구니에서 빼기" : "바구니에 담기")
             }
             .buttonStyle(.plain)
@@ -400,6 +472,8 @@ struct FolderExplorerDetailView: View {
                             SizeCard(title: "실제 할당", value: ByteCountFormatter.string(fromByteCount: entry.allocatedSize, countStyle: .file))
                             SizeCard(title: "논리 크기", value: ByteCountFormatter.string(fromByteCount: entry.logicalSize, countStyle: .file))
                         }
+                        Text("수정일: \(entry.modifiedAt?.formatted(date: .abbreviated, time: .shortened) ?? "알 수 없음")")
+                            .font(.biu(.caption)).foregroundStyle(.secondary)
                         ExplanationCard(title: "판정", symbol: "shield.lefthalf.filled", text: item.assessment.reason)
                         ExplanationCard(title: "정리 영향", symbol: "waveform.path.ecg", text: item.assessment.impact)
                         if let error = entry.errorMessage {
@@ -437,7 +511,8 @@ struct FolderExplorerDetailView: View {
                         )
                     }
                     .buttonStyle(.borderedProminent)
-                    .disabled(item.assessment.risk == .avoid || entry.calculationState != .complete)
+                    .disabled(dashboard.isPreparingCleanup || dashboard.isCleaning ||
+                              (!dashboard.isInBasket(path: entry.path) && (item.assessment.risk == .avoid || entry.calculationState != .complete)))
                 }
                 .padding(12)
                 .background(.bar)

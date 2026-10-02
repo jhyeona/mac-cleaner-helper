@@ -38,6 +38,18 @@ scripts/build-app.sh debug
 open .build/Biu-debug.app
 ```
 
+평소 실행하는 `~/Applications/비우.app`까지 갱신하려면 비우(개발용 앱 포함)를
+종료하고 아래 명령을 실행합니다. 빌드만 하면 기존 설치본은 바뀌지 않습니다.
+
+```bash
+scripts/install-local.sh
+open ~/Applications/비우.app
+```
+
+설치 스크립트는 서명을 검증한 새 앱으로 교체하고 이전 앱을
+`.build/local-install-backups/`에 보관합니다. 등록 폴더·설정·기록은 변경하지
+않습니다. 백업과 빌드 결과는 `.gitignore`의 `.build/` 규칙으로 제외됩니다.
+
 ## 테스트
 
 ```bash

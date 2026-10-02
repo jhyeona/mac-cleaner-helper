@@ -68,6 +68,7 @@ final class FolderExplorerModel: ObservableObject {
     private var currentAccess: SecurityScopedAccess?
     private var scanStartedAt = Date()
     private var currentScanComplete = false
+    private var hasUnsavedScanChanges = false
 
     init(
         folderStore: FolderBookmarkStore,
@@ -89,7 +90,28 @@ final class FolderExplorerModel: ObservableObject {
     }
 
     var canGoBack: Bool { historyIndex > 0 }
-    var canGoUp: Bool { currentURL?.path != "/" }
+    var canGoUp: Bool { currentURL != nil && currentURL?.path != "/" }
+
+    func chooseFolder() {
+        let panel = NSOpenPanel()
+        panel.title = "용량을 확인할 폴더를 선택하세요"
+        panel.prompt = "폴더 열기"
+        panel.canChooseDirectories = true
+        panel.canChooseFiles = false
+        panel.showsHiddenFiles = true
+        panel.directoryURL = currentURL
+        guard panel.runModal() == .OK, let url = panel.url else { return }
+        requestOpen(url)
+    }
+
+    func openPath(_ path: String) {
+        let expanded = (path.trimmingCharacters(in: .whitespacesAndNewlines) as NSString).expandingTildeInPath
+        guard expanded.hasPrefix("/") else {
+            errorMessage = "절대 경로나 ~/로 시작하는 경로를 입력해 주세요."
+            return
+        }
+        requestOpen(URL(fileURLWithPath: expanded, isDirectory: true))
+    }
 
     var visibleEntries: [ExplorerEntry] {
         let filtered = entryMap.values.filter {
@@ -98,12 +120,21 @@ final class FolderExplorerModel: ObservableObject {
                 || $0.path.localizedCaseInsensitiveContains(searchText)
         }
         return filtered.sorted { lhs, rhs in
+            if sortKey == .modifiedAt, (lhs.modifiedAt == nil) != (rhs.modifiedAt == nil) {
+                return lhs.modifiedAt != nil
+            }
             let comparison = compare(lhs, rhs)
             if comparison == .orderedSame {
                 return lhs.path.localizedStandardCompare(rhs.path) == .orderedAscending
             }
             return sortAscending ? comparison == .orderedAscending : comparison == .orderedDescending
         }
+    }
+
+    func selectSortKey(_ key: ExplorerSortKey) {
+        guard sortKey != key else { return }
+        sortKey = key
+        sortAscending = key == .name || key == .kind || key == .risk
     }
 
     var locations: [ExplorerLocation] {
@@ -159,6 +190,11 @@ final class FolderExplorerModel: ObservableObject {
 
     func requestOpen(_ url: URL, enterPackage: Bool = false) {
         let normalized = url.standardizedFileURL
+        guard let values = try? normalized.resourceValues(forKeys: [.isDirectoryKey, .isSymbolicLinkKey]),
+              values.isDirectory == true, values.isSymbolicLink != true else {
+            errorMessage = "폴더를 열 수 없습니다. 경로와 연결 상태를 확인해 주세요. 심볼릭 링크는 탐색하지 않습니다."
+            return
+        }
         if normalized.path == "/" {
             pendingStartupURL = normalized
             showStartupDiskWarning = true
@@ -214,12 +250,17 @@ final class FolderExplorerModel: ObservableObject {
 
     func cancel() {
         guard isScanning else { return }
-        persistCurrent(isComplete: false)
         scanGeneration = UUID()
         scanTask?.cancel()
         scanTask = nil
         isScanning = false
+        entryMap = entryMap.mapValues {
+            $0.calculationState == .pending || $0.calculationState == .calculating
+                ? replacing($0, state: .stale, error: $0.errorMessage) : $0
+        }
+        staleMessage = "계산을 중단했습니다. 완료된 항목은 유지되며 새로고침하면 다시 계산합니다."
         entries = visibleEntries
+        persistCurrent(isComplete: false)
     }
 
     func select(_ entry: ExplorerEntry?) {
@@ -279,7 +320,7 @@ final class FolderExplorerModel: ObservableObject {
         cache.invalidate(targetPaths: paths)
         cacheCount = cache.count
         guard let current = currentURL?.standardizedFileURL.path,
-              paths.contains(where: { $0 == current || $0.hasPrefix(current + "/") }) else { return }
+              paths.contains(where: { current == "/" || $0 == current || $0.hasPrefix(current + "/") }) else { return }
         refresh()
     }
 
@@ -304,6 +345,9 @@ final class FolderExplorerModel: ObservableObject {
         scanTask = nil
         isScanning = false
         acquireAccess(for: url)
+        if currentURL?.standardizedFileURL.path != url.standardizedFileURL.path {
+            searchText = ""
+        }
         currentURL = url
         selectedPath = nil
         issues = []
@@ -324,6 +368,7 @@ final class FolderExplorerModel: ObservableObject {
         }
         if let cached = cache.load(path: url.path) {
             apply(cached: cached)
+            return
         } else {
             entryMap = [:]
             entries = []
@@ -340,11 +385,14 @@ final class FolderExplorerModel: ObservableObject {
         scanTask?.cancel()
         let generation = scanGeneration
         discoveredPaths = []
+        entryMap = entryMap.mapValues { replacing($0, state: .stale, error: $0.errorMessage) }
+        entries = visibleEntries
         issues = []
         staleMessage = nil
         isScanning = true
         currentScanComplete = false
         scanStartedAt = Date()
+        hasUnsavedScanChanges = true
 
         scanTask = Task { [scanner] in
             var discoveredCount = 0
@@ -356,6 +404,7 @@ final class FolderExplorerModel: ObservableObject {
                           currentURL?.standardizedFileURL.path == url.standardizedFileURL.path else {
                         throw CancellationError()
                     }
+                    hasUnsavedScanChanges = true
                     switch event {
                     case .childDiscovered(let entry):
                         discoveredCount += 1
@@ -402,6 +451,7 @@ final class FolderExplorerModel: ObservableObject {
     }
 
     private func apply(cached: ExplorerCachedFolder) {
+        hasUnsavedScanChanges = false
         let cachedEntries: [ExplorerEntry]
         if cached.staleReason == nil {
             cachedEntries = cached.snapshot.entries
@@ -418,7 +468,8 @@ final class FolderExplorerModel: ObservableObject {
     }
 
     private func persistCurrent(isComplete: Bool, scannedAt: Date? = nil) {
-        guard let currentURL else { return }
+        // Revisiting cached data must not give old measurements a new folder timestamp.
+        guard let currentURL, hasUnsavedScanChanges else { return }
         try? cache.save(
             folder: currentURL,
             entries: Array(entryMap.values),
@@ -426,6 +477,7 @@ final class FolderExplorerModel: ObservableObject {
             isComplete: isComplete
         )
         cacheCount = cache.count
+        hasUnsavedScanChanges = false
     }
 
     private func acquireAccess(for url: URL) {

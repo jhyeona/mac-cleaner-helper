@@ -129,7 +129,6 @@ private struct ScanBackup {
     let items: [CleanupItem]
     let scannedFolders: [URL]
     let issues: [ScanIssue]
-    let selectedIDs: Set<CleanupItem.ID>
     let lastAnalysisAt: Date?
 }
 
@@ -154,6 +153,8 @@ final class DashboardModel: ObservableObject {
     @Published private(set) var inspectedID: CleanupItem.ID?
     @Published var errorMessage: String?
     @Published var confirmation: CleanupConfirmation?
+    @Published var showBasket = false
+    @Published private(set) var preparationIssues: [ScanIssue] = []
     @Published var cleanupResult: CleanupResult?
     @Published var showWholeDiskWarning = false
     @Published var showBroadFolderWarning = false
@@ -390,7 +391,6 @@ final class DashboardModel: ObservableObject {
         items.removeAll { item in
             item.path == removedPath || item.path.hasPrefix(removedPath + "/")
         }
-        selectedIDs.formIntersection(items.map(\.id))
         persistSnapshot()
     }
 
@@ -405,7 +405,6 @@ final class DashboardModel: ObservableObject {
             return
         }
         items = []
-        selectedIDs = []
         scanIssues = []
         scannedFolders = locations.map(\.url)
         lastAnalysisAt = nil
@@ -450,6 +449,7 @@ final class DashboardModel: ObservableObject {
                     currentPath: nil
                 )
                 guard scanGeneration == generation else { return }
+                refreshBasketMeasurements()
                 persistSnapshot()
                 scanBackup = nil
             } catch is CancellationError {
@@ -490,31 +490,42 @@ final class DashboardModel: ObservableObject {
     }
 
     func toggleSelection(of item: CleanupItem) {
+        guard !isPreparingCleanup, !isCleaning else { return }
+        if selectedIDs.contains(item.id) {
+            removeFromBasket(item.id)
+            return
+        }
         guard item.assessment.risk != .avoid else {
             errorMessage = "\(item.name)은(는) 보호 대상이라 정리 바구니에 담을 수 없습니다."
             return
         }
-        if selectedIDs.contains(item.id) {
-            selectedIDs.remove(item.id)
-            explorerBasketItems.removeValue(forKey: item.id)
-        } else {
-            if selectedItems.contains(where: { selected in
-                item.path.hasPrefix(selected.path + "/")
-            }) {
-                return
-            }
-            let descendants = selectedItems.filter { selected in
-                selected.path.hasPrefix(item.path + "/")
-            }
-            selectedIDs.subtract(descendants.map(\.id))
-            for descendant in descendants {
-                explorerBasketItems.removeValue(forKey: descendant.id)
-            }
-            selectedIDs.insert(item.id)
+        if let parent = selectedItems.first(where: { item.path.hasPrefix($0.path + "/") }) {
+            errorMessage = "이미 바구니에 담긴 ‘\(parent.name)’에 포함된 항목입니다."
+            return
         }
+        let descendants = selectedItems.filter { $0.path.hasPrefix(item.path + "/") }
+        selectedIDs.subtract(descendants.map(\.id))
+        for descendant in descendants { explorerBasketItems.removeValue(forKey: descendant.id) }
+        selectedIDs.insert(item.id)
+        explorerBasketItems[item.id] = item
+    }
+
+    func removeFromBasket(_ id: CleanupItem.ID) {
+        guard !isPreparingCleanup, !isCleaning else { return }
+        selectedIDs.remove(id)
+        explorerBasketItems.removeValue(forKey: id)
+        preparationIssues.removeAll { $0.path == id }
+    }
+
+    func clearBasket() {
+        guard !isPreparingCleanup, !isCleaning else { return }
+        selectedIDs = []
+        explorerBasketItems = [:]
+        preparationIssues = []
     }
 
     func toggleExplorerSelection(_ item: CleanupItem, calculationIsComplete: Bool) {
+        guard !isPreparingCleanup, !isCleaning else { return }
         if selectedIDs.contains(item.id) {
             toggleSelection(of: item)
             return
@@ -527,11 +538,7 @@ final class DashboardModel: ObservableObject {
             errorMessage = "심볼릭 링크와 접근 불가 항목은 정리 바구니에 담을 수 없습니다."
             return
         }
-        explorerBasketItems[item.id] = item
         toggleSelection(of: item)
-        if !selectedIDs.contains(item.id) {
-            explorerBasketItems.removeValue(forKey: item.id)
-        }
     }
 
     func isInBasket(path: String) -> Bool {
@@ -571,34 +578,42 @@ final class DashboardModel: ObservableObject {
 
     func prepareSelectedCleanup() {
         let selected = selectedItems
-        guard !selected.isEmpty, !isPreparingCleanup, !isCleaning else { return }
+        guard !selected.isEmpty, !isBusy else { return }
+        preparationIssues = []
         isPreparingCleanup = true
         Task {
             defer { isPreparingCleanup = false }
-            do {
-                var preparations: [CleanupPreparation] = []
-                for item in selected {
+            var preparations: [CleanupPreparation] = []
+            for item in selected {
+                do {
                     var action = item.recommendedAction
                     if action == .deleteRegeneratableCache && !allowsImmediateCacheDeletion {
                         action = .moveToTrash
                     }
                     preparations.append(try await cleanupEngine.prepare(item: item, action: action))
+                } catch {
+                    preparationIssues.append(ScanIssue(path: item.path, message: error.localizedDescription))
                 }
+            }
+            if !preparations.isEmpty {
                 confirmation = CleanupConfirmation(preparations: preparations)
-            } catch {
-                errorMessage = "실행 전 검증에서 중단했습니다: \(error.localizedDescription)"
             }
         }
     }
 
-    func executeConfirmedCleanup() {
+    func executeConfirmedCleanup(excluding excludedIDs: Set<CleanupItem.ID> = []) {
         guard let current = confirmation, !isCleaning else { return }
+        let preparations = current.preparations.filter { !excludedIDs.contains($0.item.id) }
+        guard !preparations.isEmpty,
+              preparations.allSatisfy({ $0.blockingApplications.isEmpty }) else { return }
+        for id in excludedIDs { removeFromBasket(id) }
         confirmation = nil
+        showBasket = false
         isCleaning = true
         didFailCleanupThisSession = false
         Task {
             var newReceipts: [CleanupReceipt] = []
-            for preparation in current.preparations {
+            for preparation in preparations {
                 let receipt = await cleanupEngine.execute(preparation)
                 newReceipts.append(receipt)
                 try? receiptStore?.append(receipt)
@@ -628,7 +643,6 @@ final class DashboardModel: ObservableObject {
         let generation = UUID()
         scanGeneration = generation
         items = []
-        selectedIDs = []
         scanIssues = initialIssues
         scannedFolders = folders
         lastAnalysisAt = nil
@@ -684,6 +698,7 @@ final class DashboardModel: ObservableObject {
                     }
                 }
                 guard scanGeneration == generation else { return }
+                refreshBasketMeasurements()
                 persistSnapshot()
                 scanBackup = nil
             } catch is CancellationError {
@@ -698,6 +713,12 @@ final class DashboardModel: ObservableObject {
                 isScanning = false
                 scanTask = nil
             }
+        }
+    }
+
+    private func refreshBasketMeasurements() {
+        for item in items where selectedIDs.contains(item.id) {
+            explorerBasketItems[item.id] = item
         }
     }
 
@@ -721,7 +742,6 @@ final class DashboardModel: ObservableObject {
             items: items,
             scannedFolders: scannedFolders,
             issues: scanIssues,
-            selectedIDs: selectedIDs,
             lastAnalysisAt: lastAnalysisAt
         )
     }
@@ -731,7 +751,6 @@ final class DashboardModel: ObservableObject {
         items = scanBackup.items
         scannedFolders = scanBackup.scannedFolders
         scanIssues = scanBackup.issues
-        selectedIDs = scanBackup.selectedIDs
         lastAnalysisAt = scanBackup.lastAnalysisAt
         self.scanBackup = nil
     }

@@ -43,6 +43,32 @@ final class FolderBookmarkStoreTests: XCTestCase {
         XCTAssertTrue(restoredStore.selectedFolders.isEmpty)
     }
 
+    func testSelectAllSkipsStaleFoldersAndCanClearSelection() throws {
+        let suiteName = "Biu.FolderSelectAllTests.\(UUID().uuidString)"
+        let defaults = try XCTUnwrap(UserDefaults(suiteName: suiteName))
+        defer { defaults.removePersistentDomain(forName: suiteName) }
+        let available = FileManager.default.temporaryDirectory
+            .appendingPathComponent("biu-available-\(UUID().uuidString)", isDirectory: true)
+        let missing = FileManager.default.temporaryDirectory
+            .appendingPathComponent("biu-missing-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: available, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: available) }
+
+        let records = [
+            RegisteredFolderRecord(path: available.path, bookmarkData: nil),
+            RegisteredFolderRecord(path: missing.path, bookmarkData: nil)
+        ]
+        defaults.set(try JSONEncoder().encode(records), forKey: FolderBookmarkStore.storageKey)
+        defaults.set([], forKey: FolderBookmarkStore.selectionKey)
+        let store = FolderBookmarkStore(defaults: defaults)
+
+        store.setAllSelected(true)
+        XCTAssertEqual(store.selectedFolders.map(\.url.standardizedFileURL.path), [available.path])
+
+        store.setAllSelected(false)
+        XCTAssertTrue(store.selectedFolders.isEmpty)
+    }
+
     func testFallsBackToSavedPathWhenBookmarkCannotBeResolved() throws {
         let suiteName = "Biu.FolderBookmarkFallbackTests.\(UUID().uuidString)"
         let defaults = try XCTUnwrap(UserDefaults(suiteName: suiteName))

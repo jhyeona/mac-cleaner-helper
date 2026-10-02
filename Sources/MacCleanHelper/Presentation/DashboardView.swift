@@ -60,12 +60,33 @@ struct DashboardView: View {
     }
 
     var body: some View {
-        NavigationSplitView {
-            SidebarView(model: model, section: $section, showSettings: $showSettings)
-        } content: {
-            contentColumn
-        } detail: {
-            detailColumn
+        VStack(spacing: 0) {
+            NavigationSplitView {
+                SidebarView(model: model, section: $section, showSettings: $showSettings)
+            } content: {
+                contentColumn
+            } detail: {
+                detailColumn
+            }
+            Divider()
+            HStack(spacing: 12) {
+                Label("바구니 \(model.selectedItems.count)개", systemImage: "basket")
+                Text("예상 \(ByteCountFormatter.string(fromByteCount: model.selectedSize, countStyle: .file))")
+                    .foregroundStyle(.secondary)
+                Spacer()
+                if model.isCleaning {
+                    ProgressView().controlSize(.small)
+                    Text("정리 중…")
+                }
+                Button("바구니 열기") { model.showBasket = true }
+                    .buttonStyle(.borderedProminent)
+                    .disabled(model.isCleaning)
+                    .keyboardShortcut("b", modifiers: [.command, .shift])
+                    .accessibilityIdentifier("dashboard.open-basket")
+            }
+            .font(.biu(.callout))
+            .padding(12)
+            .background(.bar)
         }
         .tint(.mint)
         .onChange(of: model.items) { _, items in
@@ -109,8 +130,11 @@ struct DashboardView: View {
         } message: {
             Text("홈 폴더나 디스크 전체는 파일이 많아 오래 걸릴 수 있고 개인 파일도 확인 필요 항목으로 표시될 수 있습니다. 가능하면 프로젝트가 모인 개발 폴더를 따로 등록해 주세요.")
         }
-        .sheet(item: $model.confirmation) { confirmation in
-            CleanupConfirmationView(confirmation: confirmation, model: model)
+        .sheet(isPresented: $model.showBasket) {
+            CleanupBasketView(model: model)
+                .sheet(item: $model.confirmation) { confirmation in
+                    CleanupConfirmationView(confirmation: confirmation, model: model)
+                }
         }
         .sheet(item: $model.cleanupResult) { result in
             CleanupResultView(result: result, model: model)
@@ -192,6 +216,7 @@ private struct SidebarView: View {
     @Binding var showSettings: Bool
     @AppStorage("Biu.quietMode") private var quietMode = false
     @AppStorage("Biu.floatingEnabled") private var floatingEnabled = false
+    @State private var folderPendingRemoval: RegisteredFolder?
 
     init(model: DashboardModel, section: Binding<DashboardSection>, showSettings: Binding<Bool>) {
         self.model = model
@@ -215,95 +240,129 @@ private struct SidebarView: View {
                     .accessibilityIdentifier("sidebar.section-picker")
 
                     HStack(spacing: 8) {
-                        MetricView(title: "재생성 가능", value: model.reclaimableSize, color: .mint)
-                        MetricView(title: "바구니", value: model.selectedSize, color: .blue)
+                        Button {
+                            section = .candidates
+                            model.searchText = ""
+                            model.categoryFilter = nil
+                            model.riskFilter = .safe
+                            model.selectSortKey(.allocatedSize)
+                            model.sortAscending = false
+                        } label: {
+                            MetricView(title: "재생성 가능 보기", value: model.reclaimableSize, color: .mint)
+                        }
+                        .buttonStyle(.plain)
+                        .help("재생성 가능한 항목을 큰 순서로 보기")
+                        Button { model.showBasket = true } label: {
+                            MetricView(title: "바구니 열기", value: model.selectedSize, color: .blue)
+                        }
+                        .buttonStyle(.plain)
+                        .disabled(model.isCleaning)
                     }
 
                     VStack(alignment: .leading, spacing: 8) {
                         HStack {
                             Text("등록한 개발 폴더").font(.biu(.caption, weight: .semibold))
                             Spacer()
-                            Text("\(model.folderStore.selectedFolders.count)/\(model.folderStore.folders.count) 선택")
-                                .font(.biu(.caption).monospacedDigit())
-                                .foregroundStyle(.secondary)
-                        }
-                        if model.folderStore.folders.isEmpty {
-                            Text("선택한 폴더만 기본 분석합니다.")
-                                .font(.biu(.caption))
-                                .foregroundStyle(.secondary)
-                        } else {
-                            ForEach(model.folderStore.folders.prefix(5)) { folder in
+                            if !folderStore.folders.isEmpty {
                                 Button {
-                                    model.folderStore.setSelected(
-                                        !model.folderStore.isSelected(folder),
-                                        for: folder
-                                    )
+                                    model.chooseAndRegisterFolders(startScan: false)
                                 } label: {
-                                    HStack(spacing: 7) {
-                                        Image(systemName: model.folderStore.isSelected(folder) ? "checkmark.square.fill" : "square")
-                                            .foregroundStyle(model.folderStore.isSelected(folder) ? Color.mint : Color.secondary)
-                                        Label(folder.url.lastPathComponent, systemImage: folder.isStale ? "folder.badge.questionmark" : "folder")
-                                            .font(.biu(.caption))
-                                            .lineLimit(1)
-                                        Spacer(minLength: 4)
-                                        if isBroadScope(folder.url) {
-                                            Text("범위 큼")
-                                                .font(.biu(.caption2, weight: .semibold))
-                                                .foregroundStyle(.orange)
-                                        }
-                                    }
-                                    .padding(.vertical, 3)
-                                    .frame(maxWidth: .infinity, minHeight: 34, alignment: .leading)
-                                    .contentShape(Rectangle())
+                                    Image(systemName: "plus")
+                                        .biuIconHitTarget(28)
                                 }
                                 .buttonStyle(.plain)
-                                .disabled(folder.isStale || model.isBusy)
-                                .help("다음 등록 폴더 분석에 \(model.folderStore.isSelected(folder) ? "포함됨" : "포함하지 않음")\n\(folder.url.path)")
+                                .disabled(model.isBusy)
+                                .help("개발 폴더 추가")
+                                .accessibilityLabel("개발 폴더 추가")
+                                .accessibilityIdentifier("sidebar.register-folder")
+                            }
+                        }
+                        if model.folderStore.folders.isEmpty {
+                            VStack(alignment: .leading, spacing: 8) {
+                                Text("분석할 폴더를 먼저 등록해 주세요.")
+                                    .font(.biu(.caption))
+                                    .foregroundStyle(.secondary)
+                                Button {
+                                    model.chooseAndRegisterFolders(startScan: false)
+                                } label: {
+                                    Label("폴더 추가", systemImage: "folder.badge.plus")
+                                        .frame(maxWidth: .infinity)
+                                }
+                                .buttonStyle(.bordered)
+                                .controlSize(.large)
+                                .disabled(model.isBusy)
+                                .accessibilityIdentifier("sidebar.register-folder")
+                            }
+                        } else {
+                            HStack(spacing: 8) {
+                                Text("\(folderStore.selectedFolders.count)/\(folderStore.folders.count)개 분석")
+                                    .font(.biu(.caption2).monospacedDigit())
+                                    .foregroundStyle(.secondary)
+                                Spacer()
+                                Button(allAvailableFoldersSelected ? "모두 해제" : "모두 선택") {
+                                    folderStore.setAllSelected(!allAvailableFoldersSelected)
+                                }
+                                .buttonStyle(.plain)
+                                .font(.biu(.caption2, weight: .semibold))
+                                .foregroundStyle(.mint)
+                                .disabled(model.isBusy || availableFolderCount == 0)
+                            }
+
+                            ForEach(folderStore.folders) { folder in
+                                HStack(spacing: 5) {
+                                    Button {
+                                        folderStore.setSelected(!folderStore.isSelected(folder), for: folder)
+                                    } label: {
+                                        HStack(spacing: 7) {
+                                            Image(systemName: folderStore.isSelected(folder) ? "checkmark.square.fill" : "square")
+                                                .foregroundStyle(folderStore.isSelected(folder) ? Color.mint : Color.secondary)
+                                            Image(systemName: folder.isStale ? "folder.badge.questionmark" : "folder")
+                                                .foregroundStyle(folder.isStale ? Color.orange : Color.secondary)
+                                            VStack(alignment: .leading, spacing: 1) {
+                                                Text(folderDisplayName(folder.url))
+                                                    .font(.biu(.caption, weight: .medium))
+                                                    .lineLimit(1)
+                                                Text(abbreviatedPath(folder.url))
+                                                    .font(.biu(.caption2))
+                                                    .foregroundStyle(.secondary)
+                                                    .lineLimit(1)
+                                                    .truncationMode(.middle)
+                                            }
+                                            Spacer(minLength: 4)
+                                            if isBroadScope(folder.url) {
+                                                Text("범위 큼")
+                                                    .font(.biu(.caption2, weight: .semibold))
+                                                    .foregroundStyle(.orange)
+                                            }
+                                        }
+                                        .frame(maxWidth: .infinity, minHeight: 38, alignment: .leading)
+                                        .contentShape(Rectangle())
+                                    }
+                                    .buttonStyle(.plain)
+                                    .disabled(folder.isStale || model.isBusy)
+                                    .help("다음 분석에 \(folderStore.isSelected(folder) ? "포함됨" : "포함하지 않음")\n\(folder.url.path)")
+
+                                    Button(role: .destructive) {
+                                        folderPendingRemoval = folder
+                                    } label: {
+                                        Image(systemName: "trash")
+                                            .foregroundStyle(.secondary)
+                                            .biuIconHitTarget(30)
+                                    }
+                                    .buttonStyle(.plain)
+                                    .disabled(model.isBusy)
+                                    .help("등록 목록에서 삭제")
+                                    .accessibilityLabel("\(folderDisplayName(folder.url)) 등록 목록에서 삭제")
+                                }
                             }
                             Text("체크한 폴더만 다음 분석에 포함됩니다.")
                                 .font(.biu(.caption2))
                                 .foregroundStyle(.secondary)
+
                         }
                     }
                     .padding(12)
                     .background(.quaternary.opacity(0.45), in: RoundedRectangle(cornerRadius: 12))
-
-                    VStack(spacing: 10) {
-                        Button {
-                            model.chooseAndRegisterFolders()
-                        } label: {
-                            SidebarActionLabel(title: "개발 폴더 등록", systemImage: "folder.badge.plus")
-                        }
-                        .font(.biu(.callout, weight: .semibold))
-                        .buttonStyle(SidebarWideButtonStyle())
-                        .disabled(model.isBusy)
-                        .accessibilityIdentifier("sidebar.register-folder")
-
-                        Button { model.scanRecommendedAreas() } label: {
-                            SidebarActionLabel(title: "추천 개발 영역 분석", systemImage: "wand.and.stars")
-                        }
-                        .font(.biu(.callout, weight: .medium))
-                        .buttonStyle(SidebarWideButtonStyle())
-                        .disabled(model.isBusy)
-                        .accessibilityIdentifier("sidebar.scan-recommended")
-
-                        if model.isScanning {
-                            Button(role: .destructive) { model.cancelScan() } label: {
-                                SidebarActionLabel(title: "분석 취소", systemImage: "stop.circle")
-                            }
-                            .font(.biu(.callout, weight: .medium))
-                            .buttonStyle(SidebarWideButtonStyle())
-                            .accessibilityIdentifier("sidebar.cancel-scan")
-                        } else if !model.folderStore.folders.isEmpty {
-                            Button { model.requestRegisteredFolderScan() } label: {
-                                SidebarActionLabel(title: "등록 폴더 분석", systemImage: "arrow.clockwise")
-                            }
-                            .font(.biu(.callout, weight: .medium))
-                            .buttonStyle(SidebarWideButtonStyle())
-                            .disabled(model.isBusy)
-                            .accessibilityIdentifier("sidebar.scan-registered")
-                        }
-                    }
 
                     if let receipt = model.receipts.first {
                         VStack(alignment: .leading, spacing: 5) {
@@ -334,7 +393,45 @@ private struct SidebarView: View {
             Divider()
 
             VStack(spacing: 2) {
-                Button { model.requestWholeDiskScan() } label: {
+                if model.isScanning {
+                    Button(role: .destructive) { model.cancelScan() } label: {
+                        Label("분석 취소", systemImage: "stop.circle")
+                            .frame(maxWidth: .infinity, minHeight: 28)
+                    }
+                    .buttonStyle(.bordered)
+                    .accessibilityIdentifier("sidebar.cancel-scan")
+                } else {
+                    Button {
+                        section = .candidates
+                        if folderStore.folders.isEmpty {
+                            model.chooseAndRegisterFolders()
+                        } else {
+                            model.requestRegisteredFolderScan()
+                        }
+                    } label: {
+                        Label(folderStore.folders.isEmpty ? "폴더 추가하고 분석" : "선택한 폴더 분석", systemImage: "play.fill")
+                            .frame(maxWidth: .infinity, minHeight: 28)
+                    }
+                    .buttonStyle(.borderedProminent)
+                    .disabled(model.isBusy || (!folderStore.folders.isEmpty && !folderStore.selectedFolders.contains { !$0.isStale }))
+                    .help("위 목록에서 체크한 폴더를 분석합니다.")
+                    .accessibilityIdentifier("sidebar.scan-registered")
+                }
+                Button {
+                    section = .candidates
+                    model.scanRecommendedAreas()
+                } label: {
+                    Label("추천 개발 영역 분석", systemImage: "wand.and.stars")
+                        .padding(.horizontal, 8)
+                }
+                .buttonStyle(SidebarFooterButtonStyle())
+                .disabled(model.isBusy)
+                .accessibilityIdentifier("sidebar.scan-recommended")
+
+                Button {
+                    section = .candidates
+                    model.requestWholeDiskScan()
+                } label: {
                     HStack(spacing: 8) {
                         Image(systemName: "internaldrive")
                             .frame(width: 18)
@@ -388,11 +485,48 @@ private struct SidebarView: View {
             .background(.bar)
         }
         .navigationSplitViewColumnWidth(min: 250, ideal: 280, max: 320)
+        .alert(
+            "등록 목록에서 삭제할까요?",
+            isPresented: Binding(
+                get: { folderPendingRemoval != nil },
+                set: { if !$0 { folderPendingRemoval = nil } }
+            ),
+            presenting: folderPendingRemoval
+        ) { folder in
+            Button("취소", role: .cancel) { folderPendingRemoval = nil }
+            Button("목록에서 삭제", role: .destructive) {
+                model.removeRegisteredFolder(folder)
+                folderPendingRemoval = nil
+            }
+        } message: { folder in
+            Text("\(folder.url.path)\nMac의 폴더나 파일은 삭제하지 않고 비우의 등록 정보만 제거합니다.")
+        }
+    }
+
+    private func folderDisplayName(_ url: URL) -> String {
+        let name = url.lastPathComponent
+        return name.isEmpty ? url.path : name
+    }
+
+    private func abbreviatedPath(_ url: URL) -> String {
+        let path = url.standardizedFileURL.path
+        let home = FileManager.default.homeDirectoryForCurrentUser.standardizedFileURL.path
+        if path == home { return "~" }
+        if path.hasPrefix(home + "/") { return "~" + String(path.dropFirst(home.count)) }
+        return path
     }
 
     private func isBroadScope(_ url: URL) -> Bool {
         let path = url.standardizedFileURL.path
         return path == "/" || path == FileManager.default.homeDirectoryForCurrentUser.standardizedFileURL.path
+    }
+
+    private var availableFolderCount: Int {
+        folderStore.folders.filter { !$0.isStale }.count
+    }
+
+    private var allAvailableFoldersSelected: Bool {
+        availableFolderCount > 0 && folderStore.selectedFolders.count == availableFolderCount
     }
 }
 
@@ -598,6 +732,12 @@ private struct ResultListView: View {
                             .font(.biu(.callout, weight: .semibold))
                             .controlSize(.large)
                             .buttonStyle(.borderedProminent)
+                            .disabled(!model.folderStore.folders.isEmpty && model.folderStore.selectedFolders.isEmpty)
+                            .help(
+                                !model.folderStore.folders.isEmpty && model.folderStore.selectedFolders.isEmpty
+                                    ? "왼쪽 등록 폴더 목록에서 분석할 폴더를 선택하세요."
+                                    : ""
+                            )
 
                             Button("추천 개발 영역 분석") { model.scanRecommendedAreas() }
                                 .font(.biu(.callout, weight: .medium))
@@ -692,9 +832,10 @@ private struct ResultRow: View {
 
 private struct ScanStatusView: View {
     @ObservedObject var model: DashboardModel
+    @State private var showIssues = false
 
     var body: some View {
-        if model.isBusy || !model.scanIssues.isEmpty || !model.selectedIDs.isEmpty {
+        if model.isBusy || !model.scanIssues.isEmpty {
             VStack(spacing: 7) {
                 if model.isScanning {
                     if model.scanProgress.totalTopLevelEntries > 0 {
@@ -725,24 +866,21 @@ private struct ScanStatusView: View {
                 }
                 HStack {
                     if !model.scanIssues.isEmpty {
-                        Label("읽지 못한 항목 \(model.scanIssues.count)개", systemImage: "exclamationmark.triangle")
+                        Button { showIssues = true } label: {
+                            Label("읽지 못한 항목 \(model.scanIssues.count)개", systemImage: "exclamationmark.triangle")
+                        }
+                            .buttonStyle(.plain)
                             .font(.biu(.caption)).foregroundStyle(.orange)
                             .help(model.scanIssues.prefix(10).map { "\($0.path): \($0.message)" }.joined(separator: "\n"))
                     }
                     Spacer()
-                    if !model.selectedIDs.isEmpty {
-                        Text("\(model.selectedIDs.count)개 · \(ByteCountFormatter.string(fromByteCount: model.selectedSize, countStyle: .file))")
-                            .font(.biu(.callout).monospacedDigit())
-                        Button("정리 바구니 검토") { model.prepareSelectedCleanup() }
-                            .font(.biu(.callout, weight: .semibold))
-                            .controlSize(.large)
-                            .buttonStyle(.borderedProminent)
-                            .disabled(model.isBusy)
-                    }
                 }
             }
             .padding(10)
             .background(.bar)
+            .sheet(isPresented: $showIssues) {
+                ScanIssuesView(issues: model.scanIssues)
+            }
         }
     }
 }
@@ -1205,12 +1343,21 @@ private struct CleanupConfirmationView: View {
     let confirmation: CleanupConfirmation
     @ObservedObject var model: DashboardModel
     @Environment(\.dismiss) private var dismiss
+    @State private var excludedIDs: Set<CleanupItem.ID> = []
+
+    private var included: [CleanupPreparation] {
+        confirmation.preparations.filter { !excludedIDs.contains($0.item.id) }
+    }
 
     var body: some View {
         VStack(alignment: .leading, spacing: 16) {
             Text("정리 전 마지막 확인").font(.biu(.title2, weight: .bold))
-            Text("예상 확보량 \(ByteCountFormatter.string(fromByteCount: confirmation.estimatedBytes, countStyle: .file))")
+            Text("\(included.count)개 · 예상 정리 용량 \(ByteCountFormatter.string(fromByteCount: included.reduce(0) { $0 + $1.item.size }, countStyle: .file))")
                 .font(.biu(.headline))
+            if !model.preparationIssues.isEmpty {
+                Text("검증하지 못한 \(model.preparationIssues.count)개는 제외됩니다. 해당 항목은 바구니에 남습니다.")
+                    .font(.biu(.caption)).foregroundStyle(.orange)
+            }
             List(confirmation.preparations, id: \.item.id) { preparation in
                 VStack(alignment: .leading, spacing: 5) {
                     HStack {
@@ -1219,6 +1366,11 @@ private struct CleanupConfirmationView: View {
                         Text(preparation.action.title)
                             .font(.biu(.callout))
                             .foregroundStyle(.secondary)
+                        Toggle("포함", isOn: Binding(
+                            get: { !excludedIDs.contains(preparation.item.id) },
+                            set: { if $0 { excludedIDs.remove(preparation.item.id) } else { excludedIDs.insert(preparation.item.id) } }
+                        ))
+                        .toggleStyle(.checkbox)
                     }
                     Text(preparation.item.path).font(.biu(.caption)).foregroundStyle(.secondary).lineLimit(1)
                     if let command = preparation.commandPreview {
@@ -1231,20 +1383,20 @@ private struct CleanupConfirmationView: View {
                 }
                 .padding(.vertical, 4)
             }
-            Text("개인 파일은 휴지통으로 이동합니다. ‘캐시 즉시 삭제’와 공식 명령은 휴지통에서 복구할 수 없습니다.")
+            Text("휴지통으로 옮긴 파일은 휴지통을 비워야 디스크 공간이 확보됩니다. ‘캐시 즉시 삭제’와 공식 명령은 휴지통에서 복구할 수 없습니다.")
                 .font(.biu(.caption)).foregroundStyle(.secondary)
             HStack {
                 Button("취소", role: .cancel) { model.confirmation = nil; dismiss() }
                     .font(.biu(.callout, weight: .medium))
                     .controlSize(.large)
                 Spacer()
-                Button("위 내용을 확인하고 정리") { model.executeConfirmedCleanup() }
+                Button("위 내용을 확인하고 정리") { model.executeConfirmedCleanup(excluding: excludedIDs) }
                     .font(.biu(.callout, weight: .semibold))
                     .controlSize(.large)
                     .buttonStyle(.borderedProminent)
                     .disabled(
-                        model.isCleaning
-                            || confirmation.preparations.contains { !$0.blockingApplications.isEmpty }
+                        model.isCleaning || included.isEmpty
+                            || included.contains { !$0.blockingApplications.isEmpty }
                     )
             }
         }
@@ -1274,7 +1426,7 @@ private struct CleanupResultView: View {
                 }
                 Spacer()
                 VStack(alignment: .trailing, spacing: 4) {
-                    Text("실제 항목 크기 감소")
+                    Text("원래 위치에서 정리된 용량")
                         .font(.biu(.caption))
                         .foregroundStyle(.secondary)
                     Text(ByteCountFormatter.string(fromByteCount: result.reclaimedBytes, countStyle: .file))
@@ -1315,7 +1467,11 @@ private struct CleanupResultView: View {
                 .padding(.vertical, 5)
             }
 
-            Text("항목 크기 감소와 디스크 여유 공간 변화는 스냅샷·파일 시스템 처리 때문에 다를 수 있습니다.")
+            if result.receipts.contains(where: { $0.succeeded && $0.action == .moveToTrash }) {
+                Text("휴지통으로 옮긴 파일은 아직 디스크 공간을 사용합니다. Finder의 휴지통에서 내용을 확인하고 비우면 공간이 확보됩니다.")
+                    .font(.biu(.callout)).foregroundStyle(.orange)
+            }
+            Text("디스크 여유 공간 변화는 각 항목 아래에 표시합니다. 스냅샷·파일 시스템 처리에 따라 정리한 용량과 다를 수 있습니다.")
                 .font(.biu(.caption))
                 .foregroundStyle(.secondary)
 
@@ -1418,12 +1574,12 @@ private struct SettingsView: View {
                                     .disabled(folder.isStale || model.isBusy)
                                     Spacer()
                                     Button(role: .destructive) { folderPendingRemoval = folder } label: {
-                                        Image(systemName: "minus.circle")
+                                        Image(systemName: "trash")
                                             .biuIconHitTarget(34)
                                     }
                                     .buttonStyle(.plain)
-                                    .help("등록 해제")
-                                    .accessibilityLabel("\(folder.url.lastPathComponent) 등록 해제")
+                                    .help("등록 목록에서 삭제")
+                                    .accessibilityLabel("\(folder.url.lastPathComponent) 등록 목록에서 삭제")
                                 }
                             }
                             if folderStore.folders.isEmpty {
@@ -1559,7 +1715,7 @@ private struct SettingsView: View {
             Text("탐지 규칙으로 재생성 가능성이 확인된 캐시만 대상이지만 휴지통에서 복구할 수 없습니다. 실행 전 정리 확인 화면에 작업 방식이 표시됩니다.")
         }
         .alert(
-            "개발 폴더 등록을 해제할까요?",
+            "등록 목록에서 삭제할까요?",
             isPresented: Binding(
                 get: { folderPendingRemoval != nil },
                 set: { if !$0 { folderPendingRemoval = nil } }
@@ -1567,7 +1723,7 @@ private struct SettingsView: View {
             presenting: folderPendingRemoval
         ) { folder in
             Button("취소", role: .cancel) { folderPendingRemoval = nil }
-            Button("등록 해제", role: .destructive) {
+            Button("목록에서 삭제", role: .destructive) {
                 model.removeRegisteredFolder(folder)
                 folderPendingRemoval = nil
             }

@@ -52,6 +52,13 @@ final class FolderBookmarkStore: ObservableObject {
         persistSelection()
     }
 
+    func setAllSelected(_ selected: Bool) {
+        selectedFolderPaths = selected
+            ? Set(folders.filter { !$0.isStale }.map { $0.url.standardizedFileURL.path })
+            : []
+        persistSelection()
+    }
+
     func add(_ url: URL) throws {
         let normalizedURL = url.standardizedFileURL
         var records = storedRecords()
