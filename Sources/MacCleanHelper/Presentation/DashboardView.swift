@@ -790,6 +790,8 @@ private struct ResultRow: View {
                 Text(item.name)
                     .font(.biu(.body, weight: .semibold))
                     .lineLimit(1)
+                    .truncationMode(.middle)
+                    .help(item.name)
                 Text(displayPath)
                     .font(.biu(.caption2))
                     .foregroundStyle(.secondary)
@@ -801,11 +803,13 @@ private struct ResultRow: View {
                     .foregroundStyle(.secondary)
                     .lineLimit(1)
             }
-            Spacer()
+            .frame(minWidth: 0, maxWidth: .infinity, alignment: .leading)
             VStack(alignment: .trailing, spacing: 3) {
                 Text(item.formattedSize).font(.biu(.callout).monospacedDigit())
                 RiskBadge(risk: item.assessment.risk)
             }
+            .frame(width: 104, alignment: .trailing)
+            .fixedSize(horizontal: true, vertical: false)
         }
         .padding(.vertical, 7)
     }

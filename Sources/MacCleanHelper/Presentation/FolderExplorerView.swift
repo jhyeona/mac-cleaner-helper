@@ -58,47 +58,49 @@ struct FolderExplorerContentView: View {
 
     private var entryTable: some View {
         GeometryReader { geometry in
-            let showsDetails = geometry.size.width >= 760
-            VStack(spacing: 0) {
-                entryHeader(showsDetails: showsDetails)
-                Divider()
-                if explorer.visibleEntries.isEmpty, !explorer.isScanning {
-                    BiuEmptyState(
-                        title: explorer.searchText.isEmpty ? "빈 폴더입니다" : "검색 결과가 없습니다",
-                        systemImage: "folder",
-                        description: explorer.searchText.isEmpty
-                            ? "표시할 바로 아래 항목이 없습니다."
-                            : "다른 이름이나 경로로 검색해 보세요."
-                    )
-                    .frame(maxWidth: .infinity, maxHeight: .infinity)
-                } else {
-                    ScrollView(.vertical) {
-                        LazyVStack(spacing: 0) {
-                            ForEach(explorer.visibleEntries) { entry in
-                                ExplorerEntryRow(
-                                    entry: entry,
-                                    showsDetails: showsDetails,
-                                    isBusy: dashboard.isPreparingCleanup || dashboard.isCleaning,
-                                    assessment: explorer.cleanupItem(for: entry).assessment,
-                                    isSelected: explorer.selectedPath == entry.path,
-                                    isInBasket: dashboard.isInBasket(path: entry.path),
-                                    select: { explorer.select(entry) },
-                                    open: { explorer.enter(entry) },
-                                    openPackage: { explorer.enterPackage(entry) },
-                                    toggleBasket: {
-                                        dashboard.toggleExplorerSelection(
-                                            explorer.cleanupItem(for: entry),
-                                            calculationIsComplete: entry.calculationState == .complete
-                                        )
-                                    }
-                                )
-                                Divider()
+            let layout = ExplorerTableLayout(viewportWidth: geometry.size.width)
+            ScrollView(.horizontal) {
+                VStack(spacing: 0) {
+                    entryHeader(layout: layout)
+                    Divider()
+                    if explorer.visibleEntries.isEmpty, !explorer.isScanning {
+                        BiuEmptyState(
+                            title: explorer.searchText.isEmpty ? "빈 폴더입니다" : "검색 결과가 없습니다",
+                            systemImage: "folder",
+                            description: explorer.searchText.isEmpty
+                                ? "표시할 바로 아래 항목이 없습니다."
+                                : "다른 이름이나 경로로 검색해 보세요."
+                        )
+                        .frame(maxWidth: .infinity, maxHeight: .infinity)
+                    } else {
+                        ScrollView(.vertical) {
+                            LazyVStack(spacing: 0) {
+                                ForEach(explorer.visibleEntries) { entry in
+                                    ExplorerEntryRow(
+                                        entry: entry,
+                                        layout: layout,
+                                        isBusy: dashboard.isPreparingCleanup || dashboard.isCleaning,
+                                        assessment: explorer.cleanupItem(for: entry).assessment,
+                                        isSelected: explorer.selectedPath == entry.path,
+                                        isInBasket: dashboard.isInBasket(path: entry.path),
+                                        select: { explorer.select(entry) },
+                                        open: { explorer.enter(entry) },
+                                        openPackage: { explorer.enterPackage(entry) },
+                                        toggleBasket: {
+                                            dashboard.toggleExplorerSelection(
+                                                explorer.cleanupItem(for: entry),
+                                                calculationIsComplete: entry.calculationState == .complete
+                                            )
+                                        }
+                                    )
+                                    Divider()
+                                }
                             }
                         }
                     }
                 }
+                .frame(width: layout.tableWidth, height: geometry.size.height, alignment: .top)
             }
-            .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
         }
     }
 
@@ -281,21 +283,20 @@ struct FolderExplorerContentView: View {
         }
     }
 
-    private func entryHeader(showsDetails: Bool) -> some View {
-        HStack(spacing: 10) {
-            Text("이름 / 유형").frame(maxWidth: .infinity, alignment: .leading)
-            Text("실제 크기").frame(width: 76, alignment: .trailing)
-            if showsDetails {
-            Text("논리 크기").frame(width: 76, alignment: .trailing)
-            Text("수정일").frame(width: 82, alignment: .trailing)
-            Text("안전도").frame(width: 84, alignment: .trailing)
-            Text("상태").frame(width: 68, alignment: .trailing)
-            }
-            Color.clear.frame(width: 70, height: 1)
+    private func entryHeader(layout: ExplorerTableLayout) -> some View {
+        HStack(spacing: ExplorerTableLayout.spacing) {
+            Text("이름 / 유형").frame(width: layout.nameWidth, alignment: .leading)
+            Text("실제 크기").frame(width: ExplorerTableLayout.allocatedWidth, alignment: .trailing)
+            Text("논리 크기").frame(width: ExplorerTableLayout.logicalWidth, alignment: .trailing)
+            Text("수정일").frame(width: ExplorerTableLayout.modifiedWidth, alignment: .trailing)
+            Text("안전도").frame(width: ExplorerTableLayout.riskWidth, alignment: .trailing)
+            Text("상태").frame(width: ExplorerTableLayout.stateWidth, alignment: .trailing)
+            Text("작업").frame(width: ExplorerTableLayout.actionsWidth, alignment: .trailing)
         }
         .font(.biu(.caption, weight: .semibold))
+        .lineLimit(1)
         .foregroundStyle(.secondary)
-        .padding(.horizontal, 12)
+        .padding(.horizontal, ExplorerTableLayout.horizontalPadding)
         .padding(.vertical, 7)
         .background(.quaternary.opacity(0.25))
     }
@@ -331,9 +332,9 @@ struct FolderExplorerContentView: View {
     }
 }
 
-private struct ExplorerEntryRow: View {
+struct ExplorerEntryRow: View {
     let entry: ExplorerEntry
-    let showsDetails: Bool
+    let layout: ExplorerTableLayout
     let isBusy: Bool
     let assessment: SafetyAssessment
     let isSelected: Bool
@@ -344,7 +345,7 @@ private struct ExplorerEntryRow: View {
     let toggleBasket: () -> Void
 
     var body: some View {
-        HStack(spacing: 10) {
+        HStack(spacing: ExplorerTableLayout.spacing) {
             HStack(spacing: 9) {
                 Image(systemName: entry.kind.symbol)
                     .foregroundStyle(entry.kind.canBrowseContents ? Color.mint : Color.secondary)
@@ -354,38 +355,34 @@ private struct ExplorerEntryRow: View {
                         Text(entry.name)
                             .font(.biu(.callout, weight: .semibold))
                             .lineLimit(1)
+                            .truncationMode(.middle)
+                            .frame(minWidth: 0, maxWidth: .infinity, alignment: .leading)
                         if entry.isHidden {
                             Text("숨김")
                                 .font(.biu(.caption2))
                                 .foregroundStyle(.secondary)
+                                .fixedSize()
                         }
                     }
                     Text(entry.kind.title)
                         .font(.biu(.caption2))
                         .foregroundStyle(.secondary)
-                    if !showsDetails {
-                        HStack(spacing: 4) {
-                            Text(assessment.risk.title)
-                                .foregroundStyle(assessment.risk == .avoid ? Color.red : Color.secondary)
-                            calculationState
-                        }
-                        .font(.biu(.caption2))
-                    }
                 }
+                .frame(minWidth: 0, maxWidth: .infinity, alignment: .leading)
             }
-            .frame(maxWidth: .infinity, alignment: .leading)
-            sizeText(entry.allocatedSize).frame(width: 76, alignment: .trailing)
-            if showsDetails {
-            sizeText(entry.logicalSize).frame(width: 76, alignment: .trailing)
+            .frame(width: layout.nameWidth, alignment: .leading)
+            .clipped()
+            sizeText(entry.allocatedSize).frame(width: ExplorerTableLayout.allocatedWidth, alignment: .trailing)
+            sizeText(entry.logicalSize).frame(width: ExplorerTableLayout.logicalWidth, alignment: .trailing)
             Text(entry.modifiedAt?.formatted(date: .numeric, time: .omitted) ?? "—")
                 .font(.biu(.caption))
                 .foregroundStyle(.secondary)
-                .frame(width: 82, alignment: .trailing)
+                .frame(width: ExplorerTableLayout.modifiedWidth, alignment: .trailing)
             RiskBadge(risk: assessment.risk)
-                .frame(width: 84, alignment: .trailing)
+                .frame(width: ExplorerTableLayout.riskWidth, alignment: .trailing)
             calculationState
-                .frame(width: 68, alignment: .trailing)
-            }
+                .font(.biu(.caption))
+                .frame(width: ExplorerTableLayout.stateWidth, alignment: .trailing)
             HStack(spacing: 5) {
                 if entry.kind == .directory {
                     Button(action: open) {
@@ -406,9 +403,10 @@ private struct ExplorerEntryRow: View {
                 .help(isInBasket ? "바구니에서 빼기" : "바구니에 담기")
             }
             .buttonStyle(.plain)
-            .frame(width: 70, alignment: .trailing)
+            .frame(width: ExplorerTableLayout.actionsWidth, alignment: .trailing)
         }
-        .padding(.horizontal, 12)
+        .lineLimit(1)
+        .padding(.horizontal, ExplorerTableLayout.horizontalPadding)
         .padding(.vertical, 8)
         .background(isSelected ? Color.accentColor.opacity(0.13) : Color.clear)
         .contentShape(Rectangle())
