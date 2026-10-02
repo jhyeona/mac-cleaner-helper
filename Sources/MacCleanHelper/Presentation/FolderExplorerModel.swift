@@ -92,6 +92,19 @@ final class FolderExplorerModel: ObservableObject {
     var canGoBack: Bool { historyIndex > 0 }
     var canGoUp: Bool { currentURL != nil && currentURL?.path != "/" }
 
+    var currentFolderSummary: ExplorerFolderSummary {
+        // Never total the search-filtered rows, or mix old cache entries into a
+        // fresh scan before those paths have been discovered again.
+        let allEntries = entryMap.values.filter { !isScanning || discoveredPaths.contains($0.path) }
+        return ExplorerFolderSummary(
+            entries: allEntries,
+            isScanning: isScanning,
+            isComplete: currentScanComplete,
+            isStale: staleMessage != nil,
+            hasIssues: !issues.isEmpty
+        )
+    }
+
     func chooseFolder() {
         let panel = NSOpenPanel()
         panel.title = "용량을 확인할 폴더를 선택하세요"
@@ -431,8 +444,10 @@ final class FolderExplorerModel: ObservableObject {
                         entryMap = entryMap.filter { discoveredPaths.contains($0.key) }
                         entries = visibleEntries
                         cachedAt = scannedAt
-                        currentScanComplete = true
-                        persistCurrent(isComplete: true, scannedAt: scannedAt)
+                        currentScanComplete = issues.isEmpty && entryMap.values.allSatisfy {
+                            $0.calculationState == .complete && $0.errorMessage == nil
+                        }
+                        persistCurrent(isComplete: currentScanComplete, scannedAt: scannedAt)
                     }
                 }
             } catch is CancellationError {

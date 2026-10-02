@@ -15,6 +15,8 @@ struct FolderExplorerContentView: View {
             } else {
                 controls
                 Divider()
+                ExplorerFolderSummaryView(summary: explorer.currentFolderSummary)
+                Divider()
                 statusBanner
                 entryTable
                 if explorer.isScanning || !explorer.issues.isEmpty {

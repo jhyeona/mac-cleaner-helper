@@ -128,7 +128,7 @@ final class FolderExplorerCacheStore {
             return "폴더가 변경되어 저장된 결과가 오래되었을 수 있습니다."
         }
         if !snapshot.isComplete {
-            return "이전 계산이 끝나기 전에 중단된 결과입니다."
+            return "이전 계산이 중단되었거나 일부 항목을 읽지 못한 결과입니다."
         }
         return nil
     }
