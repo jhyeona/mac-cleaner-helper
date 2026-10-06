@@ -1366,7 +1366,7 @@ private struct CleanupConfirmationView: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 16) {
-            Text("정리 전 마지막 확인").font(.biu(.title2, weight: .bold))
+            Text("삭제 전 최종 확인").font(.biu(.title2, weight: .bold))
             Text("\(included.count)개 · 예상 정리 용량 \(ByteCountFormatter.string(fromByteCount: included.reduce(0) { $0 + $1.item.size }, countStyle: .file))")
                 .font(.biu(.headline))
             if !model.preparationIssues.isEmpty {
@@ -1409,7 +1409,7 @@ private struct CleanupConfirmationView: View {
                     .font(.biu(.callout, weight: .medium))
                     .controlSize(.large)
                 Spacer()
-                Button("위 내용을 확인하고 정리") { model.executeConfirmedCleanup(excluding: excludedIDs) }
+                Button("삭제 실행", role: .destructive) { model.executeConfirmedCleanup(excluding: excludedIDs) }
                     .font(.biu(.callout, weight: .semibold))
                     .controlSize(.large)
                     .buttonStyle(.borderedProminent)

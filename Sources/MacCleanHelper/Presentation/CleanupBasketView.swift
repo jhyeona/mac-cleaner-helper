@@ -60,22 +60,26 @@ struct CleanupBasketView: View {
             if model.isPreparingCleanup {
                 HStack {
                     ProgressView().controlSize(.small)
-                    Text("정리할 항목을 검증하고 있어요…")
+                    Text("삭제할 항목을 확인하고 있어요…")
                 }
             } else if model.isScanning {
                 Text("분석이 끝나면 정리할 수 있어요. 바구니에서 항목을 빼는 것은 지금도 가능합니다.")
                     .font(.biu(.caption)).foregroundStyle(.secondary)
             }
             HStack {
-                Button("모두 담기 취소") { model.clearBasket() }
+                Button("바구니에서 빼기") { model.clearBasket() }
                     .disabled(model.selectedItems.isEmpty || model.isPreparingCleanup || model.isCleaning)
-                    .help("바구니 목록에서만 뺍니다. 파일을 삭제하거나 휴지통을 비우지 않습니다.")
+                    .help("담긴 항목을 모두 바구니 목록에서만 뺍니다. 파일을 삭제하거나 휴지통을 비우지 않습니다.")
                     .accessibilityIdentifier("basket.remove-all-selections")
                 Spacer()
-                Button("정리 전 확인") { model.prepareSelectedCleanup() }
+                Button("삭제 (검토)") { model.prepareSelectedCleanup() }
                     .buttonStyle(.borderedProminent)
+                    .help("삭제 대상과 방법을 최종 확인합니다. 다음 확인창에서 ‘삭제 실행’을 눌러야 실행됩니다.")
+                    .accessibilityIdentifier("basket.review-deletion")
                     .disabled(model.selectedItems.isEmpty || model.isBusy)
             }
+            Text("‘바구니에서 빼기’는 목록에서만 제외합니다. ‘삭제 (검토)’는 삭제 전 최종 확인창을 엽니다.")
+                .font(.biu(.caption)).foregroundStyle(.secondary)
         }
         .padding(24)
         .frame(width: 700, height: 560)
