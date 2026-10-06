@@ -40,9 +40,11 @@ enum ApplicationRemovalPolicy {
         guard FileManager.default.fileExists(atPath: url.path) else {
             return "앱을 찾을 수 없습니다. 볼륨 연결 상태를 확인하세요."
         }
-        if !FileManager.default.isDeletableFile(atPath: url.path) {
-            return "현재 권한으로 삭제할 수 없습니다. Finder 또는 제작사의 제거 도구를 이용하세요."
+        if (try? url.resourceValues(forKeys: [.volumeIsReadOnlyKey]))?.volumeIsReadOnly == true {
+            return "읽기 전용 볼륨의 앱은 휴지통으로 이동할 수 없습니다."
         }
+        // Lack of the caller's write permission is not a protected-app verdict.
+        // The system trash operation must be allowed to handle authorization.
         return nil
     }
 

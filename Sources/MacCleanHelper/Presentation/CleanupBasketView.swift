@@ -18,6 +18,8 @@ struct CleanupBasketView: View {
                 .font(.biu(.headline))
             Text("분석을 다시 해도 담아둔 항목은 유지됩니다. 실행 전 현재 경로와 정리 가능 여부를 다시 확인합니다.")
                 .font(.biu(.caption)).foregroundStyle(.secondary)
+            Text("휴지통 이동은 macOS가 처리합니다. 인증·권한 창이 나타나면 승인해 주세요. 취소하거나 실패한 항목은 바구니에 남습니다.")
+                .font(.biu(.caption)).foregroundStyle(.secondary)
             if model.selectedItems.isEmpty {
                 ContentUnavailableView("바구니가 비어 있어요", systemImage: "basket",
                                        description: Text("정리 후보나 용량 탐색에서 항목을 담아 주세요."))

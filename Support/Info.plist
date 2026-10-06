@@ -28,5 +28,7 @@
     <string>14.0</string>
     <key>NSHighResolutionCapable</key>
     <true/>
+    <key>NSAppBundlesUsageDescription</key>
+    <string>선택한 앱의 크기를 확인하고, 최종 확인한 앱만 휴지통으로 이동하기 위해 앱 관리 권한을 사용합니다. 앱 데이터와 설정은 삭제하지 않습니다.</string>
 </dict>
 </plist>

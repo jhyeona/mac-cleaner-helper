@@ -4,13 +4,12 @@ import XCTest
 @testable import MacCleanHelper
 
 /// Exercise the actual cleanup engine without touching the user's real Trash.
-private final class FixtureTrashFileManager: FileManager, @unchecked Sendable {
+private struct FixtureTrashMover: TrashMoving {
     let fixtureTrash: URL
-    init(fixtureTrash: URL) { self.fixtureTrash = fixtureTrash; super.init() }
-    override func trashItem(at url: URL, resultingItemURL: AutoreleasingUnsafeMutablePointer<NSURL?>?) throws {
+    func moveToTrash(_ url: URL) async throws -> URL {
         let destination = fixtureTrash.appendingPathComponent(url.lastPathComponent)
-        try moveItem(at: url, to: destination)
-        resultingItemURL?.pointee = destination as NSURL
+        try FileManager.default.moveItem(at: url, to: destination)
+        return destination
     }
 }
 
@@ -138,7 +137,7 @@ final class InstalledApplicationTests: XCTestCase {
         let measured = try FolderExplorerScanner().measureApplication(at: url)
         app.allocatedSize = measured.allocatedSize
         app.logicalSize = measured.logicalSize
-        let engine = CleanupEngine(fileManager: FixtureTrashFileManager(fixtureTrash: trash), runningApplicationProvider: { [] })
+        let engine = CleanupEngine(trashMover: FixtureTrashMover(fixtureTrash: trash), runningApplicationProvider: { [] })
         let preparation = try await engine.prepare(item: app.cleanupItem)
         XCTAssertTrue(FileManager.default.fileExists(atPath: url.path))
         let receipt = await engine.execute(preparation)

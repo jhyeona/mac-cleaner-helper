@@ -228,6 +228,8 @@ struct InstalledApplicationDetailView: View {
                             .foregroundStyle(.orange)
                     }
                     Text("앱 본체만 휴지통으로 이동합니다. 문서·설정·로그인 정보는 그대로 둡니다. 휴지통을 비워야 실제 디스크 여유 공간이 늘어납니다.")
+                    Text("필요한 경우 macOS가 인증이나 앱 관리 권한 승인을 요청합니다. 비우는 암호를 저장하거나 권한을 자동 승인하지 않습니다.")
+                        .foregroundStyle(.secondary)
                     Text("VPN·보안 프로그램·드라이버처럼 별도 제거 도구가 있는 앱은 제작사의 제거 도구를 사용하세요. 앱 본체만 지우면 서비스가 남을 수 있습니다.")
                         .foregroundStyle(.secondary)
                     Button("삭제 준비…", role: .destructive) {

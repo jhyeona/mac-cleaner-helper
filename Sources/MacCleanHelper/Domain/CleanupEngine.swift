@@ -90,10 +90,13 @@ actor CleanupEngine {
     private let classifier = SafetyClassifier()
     private let commandPolicy = OfficialCommandPolicy()
     private let runningApplicationProvider: @Sendable () -> [RunningApplication]
+    private let trashMover: any TrashMoving
 
     init(fileManager: FileManager = .default,
+         trashMover: any TrashMoving = SystemTrashMover(),
          runningApplicationProvider: @escaping @Sendable () -> [RunningApplication] = { RunningApplication.current() }) {
         self.fileManager = fileManager
+        self.trashMover = trashMover
         self.runningApplicationProvider = runningApplicationProvider
     }
 
@@ -136,7 +139,7 @@ actor CleanupEngine {
         )
     }
 
-    func execute(_ preparation: CleanupPreparation) -> CleanupReceipt {
+    func execute(_ preparation: CleanupPreparation) async -> CleanupReceipt {
         let beforeCapacity = availableCapacity(for: preparation.item.path)
         let beforeSize = preparation.item.candidate.allocatedSize
 
@@ -150,7 +153,7 @@ actor CleanupEngine {
                 try ensureApplicationsStopped(for: preparation.item)
                 let current = try validateTarget(item: preparation.item, action: .moveToTrash)
                 guard current == preparation.identity else { throw CleanupEngineError.targetChanged }
-                try fileManager.trashItem(at: URL(fileURLWithPath: preparation.item.path), resultingItemURL: nil)
+                _ = try await trashMover.moveToTrash(URL(fileURLWithPath: preparation.item.path))
 
             case .deleteRegeneratableCache:
                 try ensureApplicationsStopped(for: preparation.item)

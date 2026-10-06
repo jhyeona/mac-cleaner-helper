@@ -29,6 +29,7 @@ struct DashboardView: View {
     @State private var selection: CleanupItem.ID?
     @State private var section: DashboardSection = .candidates
     @State private var showSettings = false
+    @State private var reopenBasketAfterResult = false
     @AppStorage("Biu.quietMode") private var quietMode = false
     @AppStorage("Biu.floatingEnabled") private var floatingEnabled = false
     @AppStorage("Biu.didCompleteOnboarding") private var didCompleteOnboarding = false
@@ -161,8 +162,16 @@ struct DashboardView: View {
                     CleanupConfirmationView(confirmation: confirmation, model: model)
                 }
         }
-        .sheet(item: $model.cleanupResult) { result in
-            CleanupResultView(result: result, model: model)
+        .sheet(item: $model.cleanupResult, onDismiss: {
+            if reopenBasketAfterResult {
+                reopenBasketAfterResult = false
+                model.showBasket = true
+            }
+        }) { result in
+            CleanupResultView(result: result, model: model) {
+                reopenBasketAfterResult = true
+                model.cleanupResult = nil
+            }
         }
         .sheet(isPresented: $showSettings) {
             SettingsView(model: model, explorer: explorer)
@@ -1391,6 +1400,10 @@ private struct CleanupConfirmationView: View {
             }
             Text("휴지통으로 옮긴 파일은 휴지통을 비워야 디스크 공간이 확보됩니다. ‘캐시 즉시 삭제’와 공식 명령은 휴지통에서 복구할 수 없습니다.")
                 .font(.biu(.caption)).foregroundStyle(.secondary)
+            if included.contains(where: { $0.action == .moveToTrash }) {
+                Text("macOS의 휴지통 처리로 실행합니다. 시스템에서 인증·권한 승인을 요청하면 직접 승인해 주세요.")
+                    .font(.biu(.caption)).foregroundStyle(.secondary)
+            }
             HStack {
                 Button("취소", role: .cancel) { model.confirmation = nil; dismiss() }
                     .font(.biu(.callout, weight: .medium))
@@ -1413,6 +1426,7 @@ private struct CleanupConfirmationView: View {
 private struct CleanupResultView: View {
     let result: CleanupResult
     @ObservedObject var model: DashboardModel
+    let retry: () -> Void
     @Environment(\.dismiss) private var dismiss
 
     private var title: String {
@@ -1482,6 +1496,10 @@ private struct CleanupResultView: View {
                 .foregroundStyle(.secondary)
 
             HStack {
+                if result.failedCount > 0 {
+                    Button("바구니에서 다시 확인") { retry() }
+                        .disabled(model.selectedItems.isEmpty)
+                }
                 Spacer()
                 Button("완료") {
                     model.cleanupResult = nil
