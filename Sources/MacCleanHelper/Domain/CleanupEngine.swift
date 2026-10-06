@@ -91,12 +91,15 @@ actor CleanupEngine {
     private let commandPolicy = OfficialCommandPolicy()
     private let runningApplicationProvider: @Sendable () -> [RunningApplication]
     private let trashMover: any TrashMoving
+    private let authenticatedTrashMover: (any TrashMoving)?
 
     init(fileManager: FileManager = .default,
          trashMover: any TrashMoving = SystemTrashMover(),
+         authenticatedTrashMover: (any TrashMoving)? = FinderTrashMover(),
          runningApplicationProvider: @escaping @Sendable () -> [RunningApplication] = { RunningApplication.current() }) {
         self.fileManager = fileManager
         self.trashMover = trashMover
+        self.authenticatedTrashMover = authenticatedTrashMover
         self.runningApplicationProvider = runningApplicationProvider
     }
 
@@ -153,7 +156,21 @@ actor CleanupEngine {
                 try ensureApplicationsStopped(for: preparation.item)
                 let current = try validateTarget(item: preparation.item, action: .moveToTrash)
                 guard current == preparation.identity else { throw CleanupEngineError.targetChanged }
-                _ = try await trashMover.moveToTrash(URL(fileURLWithPath: preparation.item.path))
+                let url = URL(fileURLWithPath: preparation.item.path)
+                do {
+                    _ = try await trashMover.moveToTrash(url)
+                } catch {
+                    // Never retry cancelled, timed-out or ambiguous operations. Only an
+                    // explicit permission failure on an app may reach Finder authentication.
+                    guard ApplicationRemovalPolicy.isApplication(url),
+                          case .permissionDenied = TrashMoveFailure.classify(error) as? TrashMoveFailure,
+                          let authenticatedTrashMover else { throw error }
+                    try ensureApplicationsStopped(for: preparation.item)
+                    guard try validateTarget(item: preparation.item, action: .moveToTrash) == preparation.identity else {
+                        throw CleanupEngineError.targetChanged
+                    }
+                    _ = try await authenticatedTrashMover.moveToTrash(url)
+                }
 
             case .deleteRegeneratableCache:
                 try ensureApplicationsStopped(for: preparation.item)

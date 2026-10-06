@@ -30,5 +30,7 @@
     <true/>
     <key>NSAppBundlesUsageDescription</key>
     <string>선택한 앱의 크기를 확인하고, 최종 확인한 앱만 휴지통으로 이동하기 위해 앱 관리 권한을 사용합니다. 앱 데이터와 설정은 삭제하지 않습니다.</string>
+    <key>NSAppleEventsUsageDescription</key>
+    <string>일반 권한으로 옮길 수 없는 앱을 휴지통으로 이동하도록 Finder에 요청합니다. 선택하고 최종 확인한 앱만 대상으로 하며, 관리자 인증은 macOS가 처리합니다. 휴지통을 비우거나 앱 데이터를 삭제하지 않습니다.</string>
 </dict>
 </plist>

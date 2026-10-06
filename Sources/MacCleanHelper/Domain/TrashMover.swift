@@ -6,8 +6,8 @@ protocol TrashMoving: Sendable {
     func moveToTrash(_ url: URL) async throws -> URL
 }
 
-/// Use the system's Finder-style operation, which can present its own UI,
-/// rather than FileManager's noninteractive, caller-permission-only move.
+/// This operation still runs with the caller's file-system permissions.
+/// In particular, it does not authenticate to move root-owned applications.
 struct SystemTrashMover: TrashMoving {
     @MainActor
     func moveToTrash(_ url: URL) async throws -> URL {
@@ -32,6 +32,8 @@ struct SystemTrashMover: TrashMoving {
 enum TrashMoveFailure: LocalizedError, Equatable {
     case cancelled
     case permissionDenied(String)
+    case automationDenied
+    case timedOut
     case unconfirmed
 
     var errorDescription: String? {
@@ -39,9 +41,13 @@ enum TrashMoveFailure: LocalizedError, Equatable {
         case .cancelled:
             "macOS 휴지통 이동 또는 인증이 취소되었습니다. 대상은 바구니에 남아 있으며 다시 시도할 수 있습니다."
         case .permissionDenied(let details):
-            "macOS가 휴지통 이동 권한을 허용하지 않았습니다. 앱을 지우는 경우 시스템 설정 > 개인정보 보호 및 보안 > 앱 관리에서 비우를 허용한 후 바구니에서 다시 시도하세요. 파일 잠금이나 읽기 전용 디스크도 확인이 필요합니다.\n\(details)"
+            "휴지통 이동에 필요한 권한이 없습니다. 앱 관리 권한과 파일 소유권·잠금·볼륨 권한은 서로 다른 조건입니다. 앱 관리가 이미 켜져 있다면 같은 설정을 반복할 필요는 없습니다.\n\(details)"
+        case .automationDenied:
+            "Finder에 휴지통 이동을 요청할 권한이 없습니다. 시스템 설정 > 개인정보 보호 및 보안 > 자동화 > 비우에서 Finder를 허용한 뒤 다시 시도하세요. 앱 관리 또는 전체 디스크 접근 권한과는 다릅니다."
+        case .timedOut:
+            "Finder의 응답 시간이 초과되었습니다. 작업이 진행 중이거나 이미 이동됐을 수 있습니다. Finder의 인증 창과 원래 앱 위치를 확인한 뒤 새로고침하세요. 자동 재시도하지 않았습니다."
         case .unconfirmed:
-            "macOS에서 휴지통 이동 완료를 확인하지 못했습니다. 성공으로 처리하지 않았습니다."
+            "macOS에서 휴지통 이동 완료를 확인하지 못했습니다. 이미 이동됐을 수 있으므로 원래 위치와 휴지통을 확인한 뒤 새로고침하세요. 성공으로 처리하거나 자동 재시도하지 않았습니다."
         }
     }
 
@@ -55,6 +61,8 @@ enum TrashMoveFailure: LocalizedError, Equatable {
                 || (value.domain == NSPOSIXErrorDomain && value.code == Int(ECANCELED)) {
                 return Self.cancelled
             }
+            if value.domain == NSOSStatusErrorDomain && value.code == -1743 { return Self.automationDenied }
+            if value.domain == NSOSStatusErrorDomain && value.code == -1712 { return Self.timedOut }
             current = value.userInfo[NSUnderlyingErrorKey] as? NSError
         }
         current = error as NSError
@@ -63,7 +71,7 @@ enum TrashMoveFailure: LocalizedError, Equatable {
             if (value.domain == NSCocoaErrorDomain && [NSFileReadNoPermissionError, NSFileWriteNoPermissionError].contains(value.code))
                 || (value.domain == NSPOSIXErrorDomain && [Int(EACCES), Int(EPERM)].contains(value.code))
                 || (value.domain == NSOSStatusErrorDomain && value.code == -54) {
-                return Self.permissionDenied(error.localizedDescription)
+                return Self.permissionDenied("\(error.localizedDescription)\n오류: \(value.domain) (\(value.code))")
             }
             current = value.userInfo[NSUnderlyingErrorKey] as? NSError
         }

@@ -59,7 +59,7 @@ final class TrashMoverTests: XCTestCase {
         let app = try XCTUnwrap(InstalledApplicationScanner().application(at: appURL))
         for failure in [TrashMoveFailure.cancelled, .permissionDenied("fixture")] {
             let mover = FailingTrashMover(failure)
-            let engine = CleanupEngine(trashMover: mover, runningApplicationProvider: { [] })
+            let engine = CleanupEngine(trashMover: mover, authenticatedTrashMover: nil, runningApplicationProvider: { [] })
             let preparation = try await engine.prepare(item: app.cleanupItem)
             let receipt = await engine.execute(preparation)
             let calls = await mover.calls

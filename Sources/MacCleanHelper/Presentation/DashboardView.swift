@@ -1401,7 +1401,7 @@ private struct CleanupConfirmationView: View {
             Text("휴지통으로 옮긴 파일은 휴지통을 비워야 디스크 공간이 확보됩니다. ‘캐시 즉시 삭제’와 공식 명령은 휴지통에서 복구할 수 없습니다.")
                 .font(.biu(.caption)).foregroundStyle(.secondary)
             if included.contains(where: { $0.action == .moveToTrash }) {
-                Text("macOS의 휴지통 처리로 실행합니다. 시스템에서 인증·권한 승인을 요청하면 직접 승인해 주세요.")
+                Text("일반 이동이 권한 때문에 실패한 앱은 Finder에 휴지통 이동을 요청합니다. Finder 제어 허용·관리자 인증 창은 직접 승인해 주세요. 영구 삭제하거나 휴지통을 비우지 않습니다.")
                     .font(.biu(.caption)).foregroundStyle(.secondary)
             }
             HStack {
