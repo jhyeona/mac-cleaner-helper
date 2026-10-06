@@ -60,6 +60,15 @@ enum ExplorerScanEvent: Sendable {
 }
 
 struct FolderExplorerScanner: Sendable {
+    /// Reuse the same no-follow, single-volume accounting for app bundles.
+    func measureApplication(at url: URL) throws -> ExplorerEntry {
+        try Task.checkCancellation()
+        let device = UInt64(try fileStat(at: url).st_dev)
+        let entry = try initialEntry(at: url, allowedDevice: device)
+        guard entry.canEnter else { return entry }
+        return try measure(entry: entry, allowedDevice: device).entry
+    }
+
     private struct Measurement: Sendable {
         let entry: ExplorerEntry
         let issues: [(String, String)]

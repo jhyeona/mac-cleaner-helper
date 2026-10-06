@@ -4,14 +4,28 @@ import SwiftUI
 enum DashboardSection: String, CaseIterable {
     case candidates
     case explorer
+    case applications
 
-    var title: String { self == .candidates ? "정리 후보" : "용량 탐색" }
-    var symbol: String { self == .candidates ? "sparkles" : "externaldrive" }
+    var title: String {
+        switch self {
+        case .candidates: "정리 후보"
+        case .explorer: "용량 탐색"
+        case .applications: "앱 관리"
+        }
+    }
+    var symbol: String {
+        switch self {
+        case .candidates: "sparkles"
+        case .explorer: "externaldrive"
+        case .applications: "square.grid.2x2"
+        }
+    }
 }
 
 struct DashboardView: View {
     @StateObject private var model: DashboardModel
     @StateObject private var explorer: FolderExplorerModel
+    @StateObject private var applications = InstalledApplicationsModel()
     @State private var selection: CleanupItem.ID?
     @State private var section: DashboardSection = .candidates
     @State private var showSettings = false
@@ -24,6 +38,9 @@ struct DashboardView: View {
     }
 
     private var contentColumn: AnyView {
+        if section == .applications {
+            return AnyView(InstalledApplicationsView(model: applications, dashboard: model))
+        }
         if section == .candidates {
             return AnyView(
                 VStack(spacing: 0) {
@@ -37,6 +54,9 @@ struct DashboardView: View {
     }
 
     private var detailColumn: AnyView {
+        if section == .applications {
+            return AnyView(InstalledApplicationDetailView(model: applications, dashboard: model))
+        }
         if section == .explorer {
             return AnyView(FolderExplorerDetailView(explorer: explorer, dashboard: model))
         }
@@ -110,6 +130,7 @@ struct DashboardView: View {
         }
         .onChange(of: model.cleanupInvalidationID) { _, _ in
             explorer.handleSuccessfulCleanup(paths: model.lastSuccessfulCleanupPaths)
+            applications.handleSuccessfulCleanup(paths: model.lastSuccessfulCleanupPaths)
         }
         .onReceive(NotificationCenter.default.publisher(for: .biuShowSettings)) { _ in
             showSettings = true

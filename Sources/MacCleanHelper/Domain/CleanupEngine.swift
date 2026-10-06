@@ -23,6 +23,7 @@ enum CleanupEngineError: LocalizedError, Equatable {
     case targetChanged
     case unverifiedImmediateDeletion
     case applicationRunning([String])
+    case applicationRemovalBlocked(String)
     case commandNotAllowed
     case executableNotInstalled(String)
     case commandFailed(Int32, String)
@@ -36,6 +37,7 @@ enum CleanupEngineError: LocalizedError, Equatable {
         case .targetChanged: "분석 후 대상이 바뀌어 작업을 중단했습니다. 다시 분석하세요."
         case .unverifiedImmediateDeletion: "검증된 재생성 캐시에만 즉시 삭제를 사용할 수 있습니다."
         case .applicationRunning(let apps): "관련 앱을 종료한 뒤 다시 시도하세요: \(apps.joined(separator: ", "))"
+        case .applicationRemovalBlocked(let reason): reason
         case .commandNotAllowed: "허용 목록에 없는 명령 또는 인수입니다."
         case .executableNotInstalled(let name): "\(name) 실행 파일을 찾을 수 없습니다."
         case .commandFailed(let status, let output): "명령이 종료 코드 \(status)로 실패했습니다. \(output)"
@@ -87,9 +89,12 @@ actor CleanupEngine {
     private let fileManager: FileManager
     private let classifier = SafetyClassifier()
     private let commandPolicy = OfficialCommandPolicy()
+    private let runningApplicationProvider: @Sendable () -> [RunningApplication]
 
-    init(fileManager: FileManager = .default) {
+    init(fileManager: FileManager = .default,
+         runningApplicationProvider: @escaping @Sendable () -> [RunningApplication] = { RunningApplication.current() }) {
         self.fileManager = fileManager
+        self.runningApplicationProvider = runningApplicationProvider
     }
 
     func prepare(item: CleanupItem, action requestedAction: CleanupAction? = nil) throws -> CleanupPreparation {
@@ -118,7 +123,7 @@ actor CleanupEngine {
         let blockers: [String]
         switch action {
         case .moveToTrash, .deleteRegeneratableCache:
-            blockers = runningApplications(for: item.candidate.tool)
+            blockers = blockingApplications(for: item)
         case .officialCommand, .manualInstructions:
             blockers = []
         }
@@ -142,11 +147,13 @@ actor CleanupEngine {
 
             switch preparation.action {
             case .moveToTrash:
+                try ensureApplicationsStopped(for: preparation.item)
                 let current = try validateTarget(item: preparation.item, action: .moveToTrash)
                 guard current == preparation.identity else { throw CleanupEngineError.targetChanged }
                 try fileManager.trashItem(at: URL(fileURLWithPath: preparation.item.path), resultingItemURL: nil)
 
             case .deleteRegeneratableCache:
+                try ensureApplicationsStopped(for: preparation.item)
                 let current = try validateTarget(item: preparation.item, action: .deleteRegeneratableCache)
                 guard current == preparation.identity else { throw CleanupEngineError.targetChanged }
                 try fileManager.removeItem(at: URL(fileURLWithPath: preparation.item.path))
@@ -190,6 +197,16 @@ actor CleanupEngine {
         guard !classifier.isProtected(path: standardized), item.assessment.risk != .avoid else {
             throw CleanupEngineError.protectedTarget
         }
+        let url = URL(fileURLWithPath: standardized)
+        guard !classifier.isProtected(path: url.resolvingSymlinksInPath().path) else {
+            throw CleanupEngineError.protectedTarget
+        }
+        if ApplicationRemovalPolicy.isApplication(url) {
+            guard action == .moveToTrash else { throw CleanupEngineError.unverifiedImmediateDeletion }
+            if let reason = ApplicationRemovalPolicy.blockedReason(at: url) {
+                throw CleanupEngineError.applicationRemovalBlocked(reason)
+            }
+        }
 
         if action == .deleteRegeneratableCache {
             let allowedCategories: Set<CleanupCategory> = [.cache, .buildArtifact, .developer]
@@ -232,7 +249,18 @@ actor CleanupEngine {
         }
     }
 
-    private func runningApplications(for tool: String) -> [String] {
+    private func ensureApplicationsStopped(for item: CleanupItem) throws {
+        let blockers = blockingApplications(for: item)
+        guard blockers.isEmpty else { throw CleanupEngineError.applicationRunning(blockers) }
+    }
+
+    private func blockingApplications(for item: CleanupItem) -> [String] {
+        let running = runningApplicationProvider()
+        return Array(Set(ApplicationRemovalPolicy.blockers(for: item.path, running: running)
+            + runningApplications(for: item.candidate.tool, running: running))).sorted()
+    }
+
+    private func runningApplications(for tool: String, running: [RunningApplication]) -> [String] {
         let applications: [(bundleIdentifier: String, displayName: String)]
         switch tool.lowercased() {
         case let name where name.contains("xcode") || name.contains("simulator"):
@@ -248,8 +276,8 @@ actor CleanupEngine {
         default:
             applications = []
         }
-        let running = Set(NSWorkspace.shared.runningApplications.compactMap(\.bundleIdentifier))
-        return applications.compactMap { running.contains($0.bundleIdentifier) ? $0.displayName : nil }
+        let identifiers = Set(running.compactMap(\.bundleIdentifier))
+        return applications.compactMap { identifiers.contains($0.bundleIdentifier) ? $0.displayName : nil }
     }
 
     private func availableCapacity(for path: String) -> Int64? {
