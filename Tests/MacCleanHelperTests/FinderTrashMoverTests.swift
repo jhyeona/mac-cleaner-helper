@@ -34,8 +34,9 @@ final class FinderTrashMoverTests: XCTestCase {
         let url = root.appendingPathComponent("한글 ' \" ; $(not-a-command)\n.app")
         try FileManager.default.createDirectory(at: url, withIntermediateDirectories: true)
         let request = try FinderTrashMover.deleteEvent(for: url)
-        XCTAssertEqual(request.eventClass, AEEventClass(kCoreEventClass))
-        XCTAssertEqual(request.eventID, AEEventID(kAEDelete))
+        // Literal protocol bytes, independent of the production constants.
+        XCTAssertEqual(request.eventClass, 0x636F7265) // core, NOT aevt
+        XCTAssertEqual(request.eventID, 0x64656C6F) // delo
         let target = try XCTUnwrap(request.attributeDescriptor(forKeyword: AEKeyword(keyAddressAttr)))
         XCTAssertEqual(target.descriptorType, DescType(typeApplicationBundleID))
         XCTAssertEqual(String(data: target.data, encoding: .utf8), "com.apple.finder")
@@ -44,6 +45,26 @@ final class FinderTrashMoverTests: XCTestCase {
         XCTAssertEqual(selected.fileURLValue?.standardizedFileURL, url.standardizedFileURL)
         XCTAssertEqual(request.numberOfItems, 1)
         XCTAssertTrue(FileManager.default.fileExists(atPath: url.path), "Building a request must not send it")
+    }
+
+    func testCommandsMatchInstalledFinderAndIntrinsicScriptingDictionaries() throws {
+        let dictionary = try XMLDocument(contentsOf: URL(fileURLWithPath: "/System/Library/CoreServices/Finder.app/Contents/Resources/Finder.sdef"))
+        let intrinsics = try XMLDocument(contentsOf: URL(fileURLWithPath: "/System/Library/Frameworks/Foundation.framework/Resources/Intrinsics.sdef"))
+        let root = try fixture()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let app = root.appendingPathComponent("Test.app")
+        try FileManager.default.createDirectory(at: app, withIntermediateDirectories: true)
+        let commands = [("delete", dictionary, try FinderTrashMover.deleteEvent(for: app)),
+                        ("get", intrinsics, FinderTrashMover.resolutionEvent(for: NSAppleEventDescriptor(fileURL: app)))]
+        for (name, source, event) in commands {
+            let node = try XCTUnwrap(source.nodes(forXPath: "//command[@name='\(name)']").first as? XMLElement)
+            let expected = try XCTUnwrap(node.attribute(forName: "code")?.stringValue)
+            func bytes(_ code: UInt32) -> [UInt8] {
+                [24, 16, 8, 0].map { UInt8(truncatingIfNeeded: code >> $0) }
+            }
+            let actual = String(bytes: bytes(event.eventClass) + bytes(event.eventID), encoding: .ascii)
+            XCTAssertEqual(actual, expected, "Requests must match Finder's protocol, not a shared constant in our code")
+        }
     }
 
     func testReplySeparatesConsentCancellationPermissionAndTimeout() throws {

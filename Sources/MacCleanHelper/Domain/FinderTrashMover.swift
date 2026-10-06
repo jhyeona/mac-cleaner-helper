@@ -25,24 +25,24 @@ struct FinderTrashMover: TrashMoving {
         // Obtain automation consent BEFORE resolving the final target, then
         // recheck identity and running apps after the user has answered.
         let permission = AEDeterminePermissionToAutomateTarget(
-            address, AEEventClass(kCoreEventClass), AEEventID(kAEDelete), true
+            address, AEEventClass(kAECoreSuite), AEEventID(kAEDelete), true
         )
-        guard permission == noErr else { throw failure(code: Int(permission)) }
+        guard permission == noErr else {
+            throw failure(code: Int(permission), message: "Finder 자동화 권한 확인 오류 (\(permission))")
+        }
         try Task.checkCancellation()
         guard try validateApplication(url) == identity else { throw CleanupEngineError.targetChanged }
         let request = try deleteEvent(for: url)
         let reply = try send(request)
-        let result = try resultDescriptor(from: reply)
+        let result = try resultDescriptor(from: reply, phase: "휴지통 이동")
         let destination: URL
         if let directURL = result.fileURLValue {
             destination = directURL
         } else {
             // Finder returns an object specifier for the item now in Trash.
             // Resolve that exact result, never search Trash or infer a filename.
-            let lookup = event(id: AEEventID(kAEGetData))
-            lookup.setParam(result, forKeyword: AEKeyword(keyDirectObject))
-            lookup.setParam(NSAppleEventDescriptor(typeCode: DescType(typeAlias)), forKeyword: AEKeyword(keyAERequestedType))
-            let resolved = try resultDescriptor(from: send(lookup))
+            let lookup = resolutionEvent(for: result)
+            let resolved = try resultDescriptor(from: send(lookup), phase: "이동 결과 확인")
             guard let resolvedURL = resolved.fileURLValue else { throw TrashMoveFailure.unconfirmed }
             destination = resolvedURL
         }
@@ -86,8 +86,17 @@ struct FinderTrashMover: TrashMoving {
         return request
     }
 
+    static func resolutionEvent(for result: NSAppleEventDescriptor) -> NSAppleEventDescriptor {
+        let lookup = event(id: AEEventID(kAEGetData))
+        lookup.setParam(result, forKeyword: AEKeyword(keyDirectObject))
+        lookup.setParam(NSAppleEventDescriptor(typeCode: DescType(typeAlias)), forKeyword: AEKeyword(keyAERequestedType))
+        return lookup
+    }
+
     private static func event(id: AEEventID) -> NSAppleEventDescriptor {
-        NSAppleEventDescriptor(eventClass: AEEventClass(kCoreEventClass), eventID: id,
+        // `kCoreEventClass` is 'aevt' (open/quit), NOT the 'core' suite used
+        // by Finder's delete/get commands. See Finder.sdef's coredelo/coregetd.
+        NSAppleEventDescriptor(eventClass: AEEventClass(kAECoreSuite), eventID: id,
                               targetDescriptor: NSAppleEventDescriptor(bundleIdentifier: "com.apple.finder"),
                               returnID: AEReturnID(kAutoGenerateReturnID), transactionID: AETransactionID(kAnyTransactionID))
     }
@@ -98,9 +107,10 @@ struct FinderTrashMover: TrashMoving {
         } catch { throw TrashMoveFailure.classify(error) }
     }
 
-    static func resultDescriptor(from reply: NSAppleEventDescriptor) throws -> NSAppleEventDescriptor {
+    static func resultDescriptor(from reply: NSAppleEventDescriptor, phase: String = "응답") throws -> NSAppleEventDescriptor {
         if let error = reply.paramDescriptor(forKeyword: AEKeyword(keyErrorNumber)), error.int32Value != 0 {
-            throw failure(code: Int(error.int32Value), message: reply.paramDescriptor(forKeyword: AEKeyword(keyErrorString))?.stringValue)
+            let details = reply.paramDescriptor(forKeyword: AEKeyword(keyErrorString))?.stringValue ?? "응답을 처리하지 못했습니다."
+            throw failure(code: Int(error.int32Value), message: "Finder \(phase) 오류 (\(error.int32Value)): \(details)")
         }
         guard let result = reply.paramDescriptor(forKeyword: AEKeyword(keyDirectObject)),
               result.descriptorType != DescType(typeNull) else { throw TrashMoveFailure.unconfirmed }

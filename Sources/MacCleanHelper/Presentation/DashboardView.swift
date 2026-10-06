@@ -1525,6 +1525,8 @@ private struct SettingsView: View {
     @AppStorage("Biu.floatingEnabled") private var floatingEnabled = false
     @State private var showHistoryDeletionWarning = false
     @State private var showImmediateDeletionWarning = false
+    @State private var isCheckingFinder = false
+    @State private var finderCheckResult: String?
     @State private var folderPendingRemoval: RegisteredFolder?
 
     init(model: DashboardModel, explorer: FolderExplorerModel) {
@@ -1543,6 +1545,7 @@ private struct SettingsView: View {
                     .buttonStyle(.borderedProminent)
                     .controlSize(.large)
                     .keyboardShortcut(.defaultAction)
+                    .disabled(isCheckingFinder)
             }
             .padding(.horizontal, 24)
             .padding(.vertical, 16)
@@ -1638,6 +1641,32 @@ private struct SettingsView: View {
                         .padding(8)
                     } label: {
                         Text("정리 방식").font(.biu(.headline, weight: .semibold))
+                    }
+
+                    GroupBox {
+                        VStack(alignment: .leading, spacing: 8) {
+                            Text("앱이 만든 빈 테스트 항목만 Finder를 통해 휴지통으로 옮깁니다. 설치된 앱과 바구니는 변경하지 않습니다. 처음에는 Finder 제어 허용이 필요할 수 있습니다.")
+                                .font(.biu(.caption))
+                                .foregroundStyle(.secondary)
+                            Button(isCheckingFinder ? "Finder 응답 확인 중…" : "Finder 휴지통 연결 테스트") {
+                                isCheckingFinder = true
+                                finderCheckResult = nil
+                                Task {
+                                    finderCheckResult = await FinderTrashDiagnostic.run()
+                                    isCheckingFinder = false
+                                }
+                            }
+                            .disabled(isCheckingFinder || model.isBusy)
+                            .accessibilityIdentifier("settings.finder-trash-check")
+                            if let finderCheckResult {
+                                Text(finderCheckResult)
+                                    .font(.biu(.caption))
+                                    .textSelection(.enabled)
+                            }
+                        }
+                        .padding(8)
+                    } label: {
+                        Text("휴지통 연결 진단").font(.biu(.headline, weight: .semibold))
                     }
 
                     GroupBox {
