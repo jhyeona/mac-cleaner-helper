@@ -146,6 +146,7 @@ final class DashboardModel: ObservableObject {
     @Published private(set) var scanIssues: [ScanIssue] = []
     @Published private(set) var selectedIDs: Set<CleanupItem.ID> = []
     @Published private(set) var explorerBasketItems: [CleanupItem.ID: CleanupItem] = [:]
+    @Published private(set) var basketPersistenceError: String?
     @Published private(set) var receipts: [CleanupReceipt] = []
     @Published private(set) var lastAnalysisAt: Date?
     @Published private(set) var lastSuccessfulCleanupPaths: [String] = []
@@ -177,9 +178,10 @@ final class DashboardModel: ObservableObject {
 
     private let scanner = DirectoryScanner()
     private let detectors = DetectorRegistry()
-    private let cleanupEngine = CleanupEngine()
+    private let cleanupEngine: CleanupEngine
     private let receiptStore: CleanupReceiptStore?
     private let snapshotStore: AnalysisSnapshotStore?
+    private let basketStore: CleanupBasketStore?
     private var scanTask: Task<Void, Never>?
     private var scanGeneration = UUID()
     private var scanBackup: ScanBackup?
@@ -190,17 +192,24 @@ final class DashboardModel: ObservableObject {
         folderStore = FolderBookmarkStore()
         receiptStore = try? CleanupReceiptStore()
         snapshotStore = try? AnalysisSnapshotStore()
+        cleanupEngine = CleanupEngine()
+        basketStore = try? CleanupBasketStore()
         restorePersistentState()
+        if basketStore == nil { basketPersistenceError = "바구니 저장소를 열지 못했습니다. 현재 선택은 앱 종료 후 복원되지 않을 수 있습니다." }
     }
 
     init(
         folderStore: FolderBookmarkStore,
         receiptStore: CleanupReceiptStore?,
-        snapshotStore: AnalysisSnapshotStore?
+        snapshotStore: AnalysisSnapshotStore?,
+        basketStore: CleanupBasketStore? = nil,
+        cleanupEngine: CleanupEngine = CleanupEngine()
     ) {
         self.folderStore = folderStore
         self.receiptStore = receiptStore
         self.snapshotStore = snapshotStore
+        self.basketStore = basketStore
+        self.cleanupEngine = cleanupEngine
         restorePersistentState()
     }
 
@@ -223,6 +232,48 @@ final class DashboardModel: ObservableObject {
            let sortKey = CleanupSortKey(rawValue: savedSortKey) {
             self.sortKey = sortKey
             sortAscending = UserDefaults.standard.bool(forKey: "Biu.sortAscending")
+        }
+        restoreBasket()
+    }
+
+    private func restoreBasket() {
+        guard let basketStore else { return }
+        do {
+            // Parents first: older or edited snapshots cannot double-count a
+            // selected directory and its descendants. Missing/offline items
+            // remain visible; prepare() checks their current availability.
+            let stored = try basketStore.load().sorted { $0.path.count < $1.path.count }
+            for item in stored {
+                guard item.path.hasPrefix("/"),
+                      URL(fileURLWithPath: item.path).standardizedFileURL.path == item.path,
+                      !selectedIDs.contains(item.id),
+                      !selectedIDs.contains(where: { item.path.hasPrefix($0 + "/") }) else { continue }
+                let refreshed: CleanupItem
+                if item.category == .application {
+                    let reason = ApplicationRemovalPolicy.blockedReason(at: URL(fileURLWithPath: item.path))
+                    refreshed = CleanupItem(candidate: item.candidate,
+                        assessment: SafetyAssessment(risk: reason == nil ? .review : .avoid,
+                            reason: reason ?? "이전에 담은 앱입니다. 실행 전에 현재 상태를 다시 확인합니다.",
+                            impact: item.assessment.impact, recovery: .trash, canAutoSelect: false),
+                        recommendedAction: .moveToTrash)
+                } else {
+                    refreshed = refreshSafetyAssessment(for: item)
+                }
+                selectedIDs.insert(refreshed.id)
+                explorerBasketItems[refreshed.id] = refreshed
+            }
+        } catch {
+            basketPersistenceError = "저장된 바구니를 읽지 못했습니다. 파일은 변경하지 않았습니다: \(error.localizedDescription)"
+        }
+    }
+
+    private func persistBasket() {
+        guard let basketStore else { return }
+        do {
+            try basketStore.save(selectedItems)
+            basketPersistenceError = nil
+        } catch {
+            basketPersistenceError = "바구니 선택을 저장하지 못했습니다. 재실행하면 이전 선택이 보일 수 있습니다: \(error.localizedDescription)"
         }
     }
 
@@ -316,7 +367,8 @@ final class DashboardModel: ObservableObject {
         case .cleaning:
             "선택한 항목을 정리하고 있어요. 결과가 나올 때까지 앱을 종료하지 말아 주세요."
         case .found:
-            "후보를 찾았어요. \(sortKey.title) \(sortAscending ? "오름차순" : "내림차순")으로 보여드리며, 아무 항목도 자동 선택하지 않았어요."
+            "후보를 찾았어요. \(sortKey.title) \(sortAscending ? "오름차순" : "내림차순")으로 보여드려요. "
+                + (selectedIDs.isEmpty ? "새 항목은 자동으로 담지 않아요." : "직접 담아둔 항목은 바구니에 유지됩니다.")
         case .caution:
             "확인이 필요한 항목이에요. 영향과 복구 방법을 읽고 선택해 주세요."
         case .protecting:
@@ -508,6 +560,8 @@ final class DashboardModel: ObservableObject {
         for descendant in descendants { explorerBasketItems.removeValue(forKey: descendant.id) }
         selectedIDs.insert(item.id)
         explorerBasketItems[item.id] = item
+        confirmation = nil
+        persistBasket()
     }
 
     func removeFromBasket(_ id: CleanupItem.ID) {
@@ -515,6 +569,8 @@ final class DashboardModel: ObservableObject {
         selectedIDs.remove(id)
         explorerBasketItems.removeValue(forKey: id)
         preparationIssues.removeAll { $0.path == id }
+        confirmation = nil
+        persistBasket()
     }
 
     func clearBasket() {
@@ -522,6 +578,8 @@ final class DashboardModel: ObservableObject {
         selectedIDs = []
         explorerBasketItems = [:]
         preparationIssues = []
+        confirmation = nil
+        persistBasket()
     }
 
     func toggleExplorerSelection(_ item: CleanupItem, calculationIsComplete: Bool) {
@@ -617,6 +675,11 @@ final class DashboardModel: ObservableObject {
                 let receipt = await cleanupEngine.execute(preparation)
                 newReceipts.append(receipt)
                 try? receiptStore?.append(receipt)
+                if receipt.succeeded {
+                    selectedIDs.remove(receipt.path)
+                    explorerBasketItems.removeValue(forKey: receipt.path)
+                    persistBasket()
+                }
             }
             receipts.insert(contentsOf: newReceipts, at: 0)
             didCompleteCleanupThisSession = newReceipts.contains(where: \.succeeded)
@@ -720,6 +783,7 @@ final class DashboardModel: ObservableObject {
         for item in items where selectedIDs.contains(item.id) {
             explorerBasketItems[item.id] = item
         }
+        persistBasket()
     }
 
     private func persistSnapshot() {

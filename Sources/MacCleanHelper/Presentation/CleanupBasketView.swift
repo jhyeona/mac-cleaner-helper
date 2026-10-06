@@ -16,8 +16,12 @@ struct CleanupBasketView: View {
             }
             Text("\(model.selectedItems.count)개 · 예상 정리 용량 \(ByteCountFormatter.string(fromByteCount: model.selectedSize, countStyle: .file))")
                 .font(.biu(.headline))
-            Text("분석을 다시 해도 담아둔 항목은 유지됩니다. 실행 전 현재 경로와 정리 가능 여부를 다시 확인합니다.")
+            Text("앱을 껐다 켜거나 다시 분석해도 담아둔 항목은 유지됩니다. 표시 용량은 마지막 계산값이며, 실행 전 현재 경로와 정리 가능 여부를 다시 확인합니다.")
                 .font(.biu(.caption)).foregroundStyle(.secondary)
+            if let warning = model.basketPersistenceError {
+                Label(warning, systemImage: "exclamationmark.triangle")
+                    .font(.biu(.caption)).foregroundStyle(.orange)
+            }
             Text("앱 이동이 권한 때문에 막히면 Finder에 요청합니다. Finder 제어 허용과 관리자 인증이 필요할 수 있습니다. 취소·실패한 항목은 바구니에 남으며, 휴지통은 비우지 않습니다.")
                 .font(.biu(.caption)).foregroundStyle(.secondary)
             if model.selectedItems.isEmpty {
@@ -63,9 +67,10 @@ struct CleanupBasketView: View {
                     .font(.biu(.caption)).foregroundStyle(.secondary)
             }
             HStack {
-                Button("바구니 비우기") { model.clearBasket() }
+                Button("모두 담기 취소") { model.clearBasket() }
                     .disabled(model.selectedItems.isEmpty || model.isPreparingCleanup || model.isCleaning)
-                    .help("선택만 해제하며 파일은 변경하지 않습니다.")
+                    .help("바구니 목록에서만 뺍니다. 파일을 삭제하거나 휴지통을 비우지 않습니다.")
+                    .accessibilityIdentifier("basket.remove-all-selections")
                 Spacer()
                 Button("정리 전 확인") { model.prepareSelectedCleanup() }
                     .buttonStyle(.borderedProminent)
