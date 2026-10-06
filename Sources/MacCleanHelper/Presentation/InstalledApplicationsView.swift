@@ -1,6 +1,44 @@
 import AppKit
 import SwiftUI
 
+@MainActor
+final class ApplicationIconCache {
+    static let shared = ApplicationIconCache()
+    private let images = NSCache<NSString, NSImage>()
+    private let load: (String) -> NSImage
+
+    init(load: @escaping (String) -> NSImage = { NSWorkspace.shared.icon(forFile: $0) }) {
+        self.load = load
+        images.countLimit = 256
+    }
+
+    func icon(for app: InstalledApplication) -> NSImage {
+        let key = "\(app.path)\u{0}\(app.version)\u{0}\(app.modifiedAt?.timeIntervalSince1970 ?? 0)" as NSString
+        if let image = images.object(forKey: key) { return image }
+        // NSWorkspace supplies the app's Finder icon, including the system
+        // fallback for missing/unreadable icons. Never download icon assets.
+        let image = load(app.path)
+        images.setObject(image, forKey: key)
+        return image
+    }
+
+    func removeAll() { images.removeAllObjects() }
+}
+
+struct InstalledApplicationIcon: View {
+    let app: InstalledApplication
+    let size: CGFloat
+
+    var body: some View {
+        Image(nsImage: ApplicationIconCache.shared.icon(for: app))
+            .renderingMode(.original)
+            .resizable()
+            .scaledToFit()
+            .frame(width: size, height: size)
+            .accessibilityHidden(true)
+    }
+}
+
 struct ApplicationTableLayout {
     static let sizeWidth: CGFloat = 100
     static let statusWidth: CGFloat = 90
@@ -131,7 +169,7 @@ struct ApplicationListRow: View {
             Button(action: select) {
                 HStack(spacing: 8) {
                     HStack(spacing: 8) {
-                        Image(systemName: "app.fill").foregroundStyle(.mint).frame(width: 24)
+                        InstalledApplicationIcon(app: app, size: 24)
                         VStack(alignment: .leading, spacing: 3) {
                             Text(app.name).font(.biu(.callout, weight: .medium))
                                 .lineLimit(1).truncationMode(.middle)
@@ -165,7 +203,7 @@ struct InstalledApplicationDetailView: View {
         if let app = model.selectedApplication {
             ScrollView {
                 VStack(alignment: .leading, spacing: 16) {
-                    Image(nsImage: NSWorkspace.shared.icon(forFile: app.path)).resizable().frame(width: 56, height: 56)
+                    InstalledApplicationIcon(app: app, size: 56)
                     Text(app.name).font(.biu(.title2, weight: .bold)).textSelection(.enabled)
                     Text("버전 \(app.version)").font(.biu(.callout)).foregroundStyle(.secondary)
                     LabeledContent("앱 본체", value: app.formattedSize)

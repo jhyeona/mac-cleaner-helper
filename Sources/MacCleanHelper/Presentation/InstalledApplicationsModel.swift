@@ -65,6 +65,7 @@ final class InstalledApplicationsModel: NSObject, ObservableObject {
 
     func refresh() {
         cancel()
+        ApplicationIconCache.shared.removeAll()
         hasLoaded = true
         applications = [:]
         issues = []
